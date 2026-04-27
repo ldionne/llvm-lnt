@@ -1,9 +1,9 @@
 """
 v5 YAML schema parser.
 
-Parses test suite schema files that define commit_fields, machine_fields,
-and metrics for a v5 test suite. Produces dataclass-based schema objects
-used by the dynamic model factory.
+Parses test suite schema files that define commit_fields and metrics for a
+v5 test suite. Produces dataclass-based schema objects used by the dynamic
+model factory.
 """
 
 from __future__ import annotations
@@ -18,9 +18,6 @@ import yaml
 # Column names that are always present on the Commit table and therefore
 # cannot be used as user-defined commit_field names.
 _RESERVED_COMMIT_NAMES = frozenset({"id", "commit", "ordinal", "tag"})
-
-# Column names that are always present on the Machine table.
-_RESERVED_MACHINE_NAMES = frozenset({"id", "name", "parameters"})
 
 # Column names that are always present on the Sample table and therefore
 # cannot be used as metric names.
@@ -45,13 +42,6 @@ class CommitField:
 
 
 @dataclass(frozen=True, slots=True)
-class MachineField:
-    """A user-defined column on the Machine table."""
-    name: str
-    searchable: bool = False
-
-
-@dataclass(frozen=True, slots=True)
 class Metric:
     """A metric column on the Sample table."""
     name: str
@@ -68,12 +58,8 @@ class TestSuiteSchema:
     name: str
     metrics: list[Metric] = field(default_factory=list)
     commit_fields: list[CommitField] = field(default_factory=list)
-    machine_fields: list[MachineField] = field(default_factory=list)
     # Cached filtered lists (set in __post_init__)
     _searchable_commit_fields: list[CommitField] = field(
-        default_factory=list, init=False, repr=False, compare=False,
-    )
-    _searchable_machine_fields: list[MachineField] = field(
         default_factory=list, init=False, repr=False, compare=False,
     )
 
@@ -83,19 +69,10 @@ class TestSuiteSchema:
             "_searchable_commit_fields",
             [f for f in self.commit_fields if f.searchable],
         )
-        object.__setattr__(
-            self,
-            "_searchable_machine_fields",
-            [f for f in self.machine_fields if f.searchable],
-        )
 
     @property
     def searchable_commit_fields(self) -> list[CommitField]:
         return self._searchable_commit_fields
-
-    @property
-    def searchable_machine_fields(self) -> list[MachineField]:
-        return self._searchable_machine_fields
 
 
 class SchemaError(Exception):
@@ -142,27 +119,6 @@ def _parse_commit_fields(raw: list[dict[str, Any]]) -> list[CommitField]:
     return fields
 
 
-def _parse_machine_fields(raw: list[dict[str, Any]]) -> list[MachineField]:
-    fields: list[MachineField] = []
-    seen: set[str] = set()
-    for entry in raw:
-        name = entry.get("name")
-        if not name or not isinstance(name, str):
-            raise SchemaError("machine_fields entry missing 'name'")
-        if name in _RESERVED_MACHINE_NAMES:
-            raise SchemaError(
-                f"machine_fields name {name!r} is reserved "
-                f"(cannot use {sorted(_RESERVED_MACHINE_NAMES)})"
-            )
-        if name in seen:
-            raise SchemaError(f"duplicate machine_fields name: {name!r}")
-        seen.add(name)
-
-        searchable = bool(entry.get("searchable", False))
-        fields.append(MachineField(name=name, searchable=searchable))
-    return fields
-
-
 def _parse_metrics(raw: list[dict[str, Any]]) -> list[Metric]:
     metrics: list[Metric] = []
     seen: set[str] = set()
@@ -200,6 +156,10 @@ def parse_schema(data: dict[str, Any]) -> TestSuiteSchema:
     """Parse a raw YAML dict into a :class:`TestSuiteSchema`.
 
     Raises :class:`SchemaError` on validation failures.
+
+    The ``machine_fields`` key, if present, is silently ignored (removed
+    from the v5 data model; may still appear in stored schemas from
+    earlier revisions).
     """
     name = data.get("name")
     if not name or not isinstance(name, str):
@@ -207,13 +167,11 @@ def parse_schema(data: dict[str, Any]) -> TestSuiteSchema:
 
     metrics = _parse_metrics(data.get("metrics", []))
     commit_fields = _parse_commit_fields(data.get("commit_fields", []))
-    machine_fields = _parse_machine_fields(data.get("machine_fields", []))
 
     return TestSuiteSchema(
         name=name,
         metrics=metrics,
         commit_fields=commit_fields,
-        machine_fields=machine_fields,
     )
 
 

@@ -53,10 +53,6 @@ def _setup_v5_instance(dest_dir):
             {'name': 'llvm_project_revision', 'searchable': True,
              'display': True},
         ],
-        'machine_fields': [
-            {'name': 'hardware', 'searchable': True},
-            {'name': 'os', 'searchable': True},
-        ],
     })
 
     db = app.instance.get_database("default")

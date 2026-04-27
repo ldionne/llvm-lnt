@@ -43,10 +43,6 @@ def _test_schema():
             {"name": "author", "searchable": True},
             {"name": "message", "type": "text"},
         ],
-        "machine_fields": [
-            {"name": "hardware", "searchable": True},
-            {"name": "os", "searchable": True},
-        ],
     })
 
 
@@ -77,12 +73,10 @@ class TestModelCreation(unittest.TestCase):
         self.assertIn("author", cols)
         self.assertIn("message", cols)
 
-    def test_machine_table_has_parameters(self):
+    def test_no_machine_table(self):
+        """Machine table should not exist -- it was removed."""
         insp = sqlalchemy.inspect(self.engine)
-        cols = {c['name'] for c in insp.get_columns("t_Machine")}
-        self.assertIn("parameters", cols)
-        self.assertIn("hardware", cols)
-        self.assertIn("os", cols)
+        self.assertNotIn("t_Machine", insp.get_table_names())
 
     def test_sample_table_has_metric_columns(self):
         """Schema-defined metrics should appear as dynamic columns."""
@@ -92,14 +86,23 @@ class TestModelCreation(unittest.TestCase):
         self.assertIn("execution_time", cols)
         self.assertIn("compile_status", cols)
 
+    def test_run_has_no_machine_id(self):
+        """Run table should not have a machine_id column."""
+        insp = sqlalchemy.inspect(self.engine)
+        cols = {c['name'] for c in insp.get_columns("t_Run")}
+        self.assertNotIn("machine_id", cols)
+        self.assertIn("run_parameters", cols)
+
     def test_all_tables_created(self):
-        """All 7 per-suite tables should exist."""
+        """All per-suite tables should exist (no Machine)."""
         insp = sqlalchemy.inspect(self.engine)
         tables = set(insp.get_table_names())
         expected = {
-            "t_Commit", "t_Machine", "t_Run", "t_Test",
+            "t_Commit", "t_Run", "t_Test",
             "t_Sample", "t_Regression",
             "t_RegressionIndicator",
+            "t_ParameterKey", "t_ParameterValue",
+            "t_DashboardCard",
         }
         self.assertTrue(expected.issubset(tables), f"Missing: {expected - tables}")
 
@@ -190,82 +193,6 @@ class TestCommitCRUD(unittest.TestCase):
         session.close()
 
 
-class TestMachineCRUD(unittest.TestCase):
-
-    @classmethod
-    def setUpClass(cls):
-        cls.engine = _make_engine()
-        cls.schema = _test_schema()
-        cls.models = create_suite_models(cls.schema)
-        cls.models.base.metadata.drop_all(cls.engine)
-        cls.models.base.metadata.create_all(cls.engine)
-        cls.Session = sqlalchemy.orm.sessionmaker(cls.engine)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.models.base.metadata.drop_all(cls.engine)
-        cls.engine.dispose()
-
-    def test_create_machine(self):
-        session = self.Session()
-        m = self.models.Machine()
-        m.name = "test-machine-1"
-        m.parameters = {"key": "value"}
-        m.hardware = "x86_64"
-        m.os = "linux"
-        session.add(m)
-        session.commit()
-        self.assertIsNotNone(m.id)
-        session.close()
-
-    def test_machine_name_unique(self):
-        session = self.Session()
-        m1 = self.models.Machine()
-        m1.name = "unique-machine"
-        m1.parameters = {}
-        session.add(m1)
-        session.commit()
-
-        m2 = self.models.Machine()
-        m2.name = "unique-machine"
-        m2.parameters = {}
-        session.add(m2)
-        with self.assertRaises(sqlalchemy.exc.IntegrityError):
-            session.commit()
-        session.rollback()
-        session.close()
-
-    def test_parameters_default_empty(self):
-        """Machine parameters should default to empty dict on the server side."""
-        session = self.Session()
-        m = self.models.Machine()
-        m.name = "default-params-machine"
-        session.add(m)
-        session.commit()
-
-        fetched = session.query(self.models.Machine).filter_by(
-            name="default-params-machine").one()
-        self.assertEqual(fetched.parameters, {})
-        session.close()
-
-    def test_jsonb_nested_parameters(self):
-        session = self.Session()
-        m = self.models.Machine()
-        m.name = "nested-params-machine"
-        m.parameters = {
-            "config": {"threads": 4, "flags": ["-O2", "-march=native"]},
-            "tags": ["ci", "nightly"],
-        }
-        session.add(m)
-        session.commit()
-
-        fetched = session.query(self.models.Machine).filter_by(
-            name="nested-params-machine").one()
-        self.assertEqual(fetched.parameters["config"]["threads"], 4)
-        self.assertEqual(fetched.parameters["tags"], ["ci", "nightly"])
-        session.close()
-
-
 class _ModelTestBase(unittest.TestCase):
     """Shared setup/teardown and helpers for model-level tests."""
 
@@ -283,14 +210,6 @@ class _ModelTestBase(unittest.TestCase):
         cls.models.base.metadata.drop_all(cls.engine)
         cls.engine.dispose()
 
-    def _make_machine(self, session, name):
-        m = self.models.Machine()
-        m.name = name
-        m.parameters = {}
-        session.add(m)
-        session.flush()
-        return m
-
     def _make_test(self, session, name):
         t = self.models.Test()
         t.name = name
@@ -305,20 +224,24 @@ class _ModelTestBase(unittest.TestCase):
         session.flush()
         return c
 
+    def _make_run(self, session, commit):
+        import uuid as uuid_module
+        r = self.models.Run()
+        r.uuid = str(uuid_module.uuid4())
+        r.commit_id = commit.id
+        r.submitted_at = utcnow()
+        r.run_parameters = {}
+        session.add(r)
+        session.flush()
+        return r
+
 
 class TestRunCRUD(_ModelTestBase):
 
     def test_create_run_with_commit(self):
         session = self.Session()
-        machine = self._make_machine(session, "run-m-1")
         commit = self._make_commit(session, "run-c-1")
-        run = self.models.Run()
-        run.uuid = "aaaaaaaa-1111-2222-3333-444444444444"
-        run.machine_id = machine.id
-        run.commit_id = commit.id
-        run.submitted_at = datetime.datetime(2024, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc)
-        run.run_parameters = {"build": "Release"}
-        session.add(run)
+        run = self._make_run(session, commit)
         session.commit()
         self.assertIsNotNone(run.id)
         self.assertEqual(run.commit_id, commit.id)
@@ -326,13 +249,12 @@ class TestRunCRUD(_ModelTestBase):
 
     def test_create_run_without_commit_fails(self):
         """Creating a run with NULL commit_id should raise IntegrityError."""
+        import uuid as uuid_module
         session = self.Session()
-        machine = self._make_machine(session, "run-m-2")
         run = self.models.Run()
-        run.uuid = "bbbbbbbb-1111-2222-3333-444444444444"
-        run.machine_id = machine.id
+        run.uuid = str(uuid_module.uuid4())
         run.commit_id = None
-        run.submitted_at = datetime.datetime(2024, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        run.submitted_at = utcnow()
         run.run_parameters = {}
         session.add(run)
         with self.assertRaises(sqlalchemy.exc.IntegrityError):
@@ -342,11 +264,9 @@ class TestRunCRUD(_ModelTestBase):
 
     def test_uuid_unique(self):
         session = self.Session()
-        machine = self._make_machine(session, "run-m-3")
         commit = self._make_commit(session, "run-c-3")
         r1 = self.models.Run()
         r1.uuid = "cccccccc-1111-2222-3333-444444444444"
-        r1.machine_id = machine.id
         r1.commit_id = commit.id
         r1.submitted_at = utcnow()
         r1.run_parameters = {}
@@ -355,7 +275,6 @@ class TestRunCRUD(_ModelTestBase):
 
         r2 = self.models.Run()
         r2.uuid = "cccccccc-1111-2222-3333-444444444444"  # same
-        r2.machine_id = machine.id
         r2.commit_id = commit.id
         r2.submitted_at = utcnow()
         r2.run_parameters = {}
@@ -367,24 +286,23 @@ class TestRunCRUD(_ModelTestBase):
 
     def test_run_parameters_jsonb(self):
         session = self.Session()
-        machine = self._make_machine(session, "run-m-4")
         commit = self._make_commit(session, "run-c-4")
+        import uuid as uuid_module
         run = self.models.Run()
-        run.uuid = "dddddddd-1111-2222-3333-444444444444"
-        run.machine_id = machine.id
+        run.uuid = str(uuid_module.uuid4())
         run.commit_id = commit.id
         run.submitted_at = utcnow()
         run.run_parameters = {
-            "nested": {"key": [1, 2, 3]},
-            "null_value": None,
+            "compiler": "clang-21",
+            "os": "linux",
         }
         session.add(run)
         session.commit()
 
         fetched = session.query(self.models.Run).filter_by(
-            uuid="dddddddd-1111-2222-3333-444444444444").one()
-        self.assertEqual(fetched.run_parameters["nested"]["key"], [1, 2, 3])
-        self.assertIsNone(fetched.run_parameters["null_value"])
+            uuid=run.uuid).one()
+        self.assertEqual(fetched.run_parameters["compiler"], "clang-21")
+        self.assertEqual(fetched.run_parameters["os"], "linux")
         session.close()
 
 
@@ -405,13 +323,8 @@ class TestSampleCreation(unittest.TestCase):
         cls.engine.dispose()
 
     def test_create_sample_with_metrics(self):
+        import uuid as uuid_module
         session = self.Session()
-
-        m = self.models.Machine()
-        m.name = "sample-machine"
-        m.parameters = {}
-        session.add(m)
-        session.flush()
 
         c = self.models.Commit()
         c.commit = "sample-commit"
@@ -424,8 +337,7 @@ class TestSampleCreation(unittest.TestCase):
         session.flush()
 
         r = self.models.Run()
-        r.uuid = "sample-run-uuid-00000000000000000"[:36]
-        r.machine_id = m.id
+        r.uuid = str(uuid_module.uuid4())
         r.commit_id = c.id
         r.submitted_at = utcnow()
         r.run_parameters = {}
@@ -466,7 +378,7 @@ class TestSampleCreation(unittest.TestCase):
 class TestRegressionAndIndicatorModels(_ModelTestBase):
 
     def test_create_regression_with_commit_and_notes(self):
-        """Create a Regression with commit_id and notes."""
+        """Create a Regression with commit_id (NOT NULL) and notes."""
         session = self.Session()
         c = self._make_commit(session, "reg-model-c1")
 
@@ -485,37 +397,38 @@ class TestRegressionAndIndicatorModels(_ModelTestBase):
         self.assertEqual(reg.commit_id, c.id)
         session.close()
 
-    def test_regression_commit_id_nullable(self):
-        """Regression without a commit_id should persist with NULL."""
+    def test_regression_commit_id_not_nullable(self):
+        """Regression without a commit_id should fail (NOT NULL)."""
         session = self.Session()
         reg = self.models.Regression()
         reg.uuid = "reg-model-uuid-null-commit0000000"[:36]
         reg.title = "No commit regression"
         reg.state = 0
         session.add(reg)
-        session.commit()
-
-        self.assertIsNotNone(reg.id)
-        self.assertIsNone(reg.commit_id)
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            session.commit()
+        session.rollback()
         session.close()
 
     def test_regression_indicator_has_uuid(self):
         """RegressionIndicator should have a uuid field."""
         session = self.Session()
-        m = self._make_machine(session, "ri-model-m1")
+        c = self._make_commit(session, "ri-model-c1")
+        run = self._make_run(session, c)
         t = self._make_test(session, "ri-model-t1")
 
         reg = self.models.Regression()
         reg.uuid = "reg-model-uuid-ri-uuid0000000000"[:36]
         reg.title = "RI UUID test"
         reg.state = 0
+        reg.commit_id = c.id
         session.add(reg)
         session.flush()
 
         ri = self.models.RegressionIndicator()
         ri.uuid = "ri-model-uuid-000000000000000000"[:36]
         ri.regression_id = reg.id
-        ri.machine_id = m.id
+        ri.run_id = run.id
         ri.test_id = t.id
         ri.metric = "execution_time"
         session.add(ri)
@@ -526,31 +439,34 @@ class TestRegressionAndIndicatorModels(_ModelTestBase):
         session.close()
 
     def test_regression_indicator_unique_constraint(self):
-        """Duplicate (regression_id, machine_id, test_id, metric) should fail."""
+        """Duplicate (regression_id, run_id, test_id, metric) should fail."""
         session = self.Session()
-        m = self._make_machine(session, "ri-model-m-uniq")
+        c = self._make_commit(session, "ri-model-c-uniq")
+        run = self._make_run(session, c)
         t = self._make_test(session, "ri-model-t-uniq")
 
         reg = self.models.Regression()
         reg.uuid = "reg-model-uuid-uniq00000000000000"[:36]
         reg.title = "Unique constraint test"
         reg.state = 0
+        reg.commit_id = c.id
         session.add(reg)
         session.flush()
 
+        import uuid as uuid_module
         ri1 = self.models.RegressionIndicator()
-        ri1.uuid = "ri-model-uuid-uniq1-00000000000000"[:36]
+        ri1.uuid = str(uuid_module.uuid4())
         ri1.regression_id = reg.id
-        ri1.machine_id = m.id
+        ri1.run_id = run.id
         ri1.test_id = t.id
         ri1.metric = "execution_time"
         session.add(ri1)
         session.flush()
 
         ri2 = self.models.RegressionIndicator()
-        ri2.uuid = "ri-model-uuid-uniq2-00000000000000"[:36]
+        ri2.uuid = str(uuid_module.uuid4())
         ri2.regression_id = reg.id
-        ri2.machine_id = m.id
+        ri2.run_id = run.id
         ri2.test_id = t.id
         ri2.metric = "execution_time"
         session.add(ri2)
@@ -560,36 +476,40 @@ class TestRegressionAndIndicatorModels(_ModelTestBase):
         session.close()
 
     def test_same_triple_on_different_regressions_ok(self):
-        """Same (machine, test, metric) on different regressions should succeed."""
+        """Same (run, test, metric) on different regressions should succeed."""
         session = self.Session()
-        m = self._make_machine(session, "ri-model-m-multi")
+        c = self._make_commit(session, "ri-model-c-multi")
+        run = self._make_run(session, c)
         t = self._make_test(session, "ri-model-t-multi")
 
+        import uuid as uuid_module
         reg1 = self.models.Regression()
-        reg1.uuid = "reg-model-uuid-multi1-000000000000"[:36]
+        reg1.uuid = str(uuid_module.uuid4())
         reg1.title = "Reg 1"
         reg1.state = 0
+        reg1.commit_id = c.id
         session.add(reg1)
 
         reg2 = self.models.Regression()
-        reg2.uuid = "reg-model-uuid-multi2-000000000000"[:36]
+        reg2.uuid = str(uuid_module.uuid4())
         reg2.title = "Reg 2"
         reg2.state = 0
+        reg2.commit_id = c.id
         session.add(reg2)
         session.flush()
 
         ri1 = self.models.RegressionIndicator()
-        ri1.uuid = "ri-model-uuid-multi1-000000000000"[:36]
+        ri1.uuid = str(uuid_module.uuid4())
         ri1.regression_id = reg1.id
-        ri1.machine_id = m.id
+        ri1.run_id = run.id
         ri1.test_id = t.id
         ri1.metric = "execution_time"
         session.add(ri1)
 
         ri2 = self.models.RegressionIndicator()
-        ri2.uuid = "ri-model-uuid-multi2-000000000000"[:36]
+        ri2.uuid = str(uuid_module.uuid4())
         ri2.regression_id = reg2.id
-        ri2.machine_id = m.id
+        ri2.run_id = run.id
         ri2.test_id = t.id
         ri2.metric = "execution_time"
         session.add(ri2)
@@ -602,20 +522,23 @@ class TestRegressionAndIndicatorModels(_ModelTestBase):
     def test_delete_regression_cascades_to_indicators(self):
         """Deleting a Regression should cascade-delete its indicators."""
         session = self.Session()
-        m = self._make_machine(session, "ri-model-m-cascade")
+        c = self._make_commit(session, "ri-model-c-cascade")
+        run = self._make_run(session, c)
         t = self._make_test(session, "ri-model-t-cascade")
 
+        import uuid as uuid_module
         reg = self.models.Regression()
-        reg.uuid = "reg-model-uuid-cascade00000000000"[:36]
+        reg.uuid = str(uuid_module.uuid4())
         reg.title = "Cascade test"
         reg.state = 0
+        reg.commit_id = c.id
         session.add(reg)
         session.flush()
 
         ri = self.models.RegressionIndicator()
-        ri.uuid = "ri-model-uuid-cascade00000000000"[:36]
+        ri.uuid = str(uuid_module.uuid4())
         ri.regression_id = reg.id
-        ri.machine_id = m.id
+        ri.run_id = run.id
         ri.test_id = t.id
         ri.metric = "execution_time"
         session.add(ri)
@@ -638,8 +561,9 @@ class TestRegressionAndIndicatorModels(_ModelTestBase):
         session = self.Session()
         c = self._make_commit(session, "reg-model-c-fk")
 
+        import uuid as uuid_module
         reg = self.models.Regression()
-        reg.uuid = "reg-model-uuid-fk-commit0000000"[:36]
+        reg.uuid = str(uuid_module.uuid4())
         reg.title = "FK test"
         reg.state = 0
         reg.commit_id = c.id
@@ -650,6 +574,91 @@ class TestRegressionAndIndicatorModels(_ModelTestBase):
             session.delete(c)
             session.flush()
         session.rollback()
+        session.close()
+
+
+class TestParameterKeyModel(_ModelTestBase):
+    """Tests for the ParameterKey model."""
+
+    def test_create_parameter_key(self):
+        session = self.Session()
+        pk = self.models.ParameterKey()
+        pk.key = "compiler"
+        session.add(pk)
+        session.commit()
+        self.assertIsNotNone(pk.id)
+        session.close()
+
+    def test_key_unique(self):
+        session = self.Session()
+        pk1 = self.models.ParameterKey()
+        pk1.key = "unique_key_test"
+        session.add(pk1)
+        session.commit()
+
+        pk2 = self.models.ParameterKey()
+        pk2.key = "unique_key_test"
+        session.add(pk2)
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            session.commit()
+        session.rollback()
+        session.close()
+
+
+class TestParameterValueModel(_ModelTestBase):
+    """Tests for the ParameterValue model."""
+
+    def test_create_parameter_value(self):
+        session = self.Session()
+        pk = self.models.ParameterKey()
+        pk.key = "pv_test_key"
+        session.add(pk)
+        session.flush()
+
+        pv = self.models.ParameterValue()
+        pv.key_id = pk.id
+        pv.value = "clang-21"
+        session.add(pv)
+        session.commit()
+        self.assertIsNotNone(pv.id)
+        session.close()
+
+    def test_key_value_unique(self):
+        session = self.Session()
+        pk = self.models.ParameterKey()
+        pk.key = "pv_unique_key"
+        session.add(pk)
+        session.flush()
+
+        pv1 = self.models.ParameterValue()
+        pv1.key_id = pk.id
+        pv1.value = "same_value"
+        session.add(pv1)
+        session.commit()
+
+        pv2 = self.models.ParameterValue()
+        pv2.key_id = pk.id
+        pv2.value = "same_value"
+        session.add(pv2)
+        with self.assertRaises(sqlalchemy.exc.IntegrityError):
+            session.commit()
+        session.rollback()
+        session.close()
+
+
+class TestDashboardCardModel(_ModelTestBase):
+    """Tests for the DashboardCard model."""
+
+    def test_create_dashboard_card(self):
+        session = self.Session()
+        card = self.models.DashboardCard()
+        card.position = 0
+        card.params = {"compiler": "clang-21"}
+        card.metric = "execution_time"
+        card.last_n = 500
+        session.add(card)
+        session.commit()
+        self.assertIsNotNone(card.id)
         session.close()
 
 
@@ -671,12 +680,8 @@ class TestCascadingDeletes(unittest.TestCase):
 
     def test_delete_run_keeps_commit(self):
         """Deleting a run should NOT delete the commit."""
+        import uuid as uuid_module
         session = self.Session()
-
-        m = self.models.Machine()
-        m.name = "cascade-machine"
-        m.parameters = {}
-        session.add(m)
 
         c = self.models.Commit()
         c.commit = "cascade-commit"
@@ -684,8 +689,7 @@ class TestCascadingDeletes(unittest.TestCase):
         session.flush()
 
         r = self.models.Run()
-        r.uuid = "cascade-run-uuid00000000000000000"[:36]
-        r.machine_id = m.id
+        r.uuid = str(uuid_module.uuid4())
         r.commit_id = c.id
         r.submitted_at = utcnow()
         r.run_parameters = {}
@@ -704,37 +708,6 @@ class TestCascadingDeletes(unittest.TestCase):
         # Commit survives
         self.assertIsNotNone(
             session.query(self.models.Commit).get(commit_id))
-        session.close()
-
-    def test_delete_machine_cascades_to_runs(self):
-        """Deleting a machine should cascade-delete its runs."""
-        session = self.Session()
-
-        m = self.models.Machine()
-        m.name = "cascade-machine-2"
-        m.parameters = {}
-        session.add(m)
-
-        c = self.models.Commit()
-        c.commit = "cascade-machine-commit"
-        session.add(c)
-        session.flush()
-
-        r = self.models.Run()
-        r.uuid = "cascade-m-run-uuid0000000000000000"[:36]
-        r.machine_id = m.id
-        r.commit_id = c.id
-        r.submitted_at = utcnow()
-        r.run_parameters = {}
-        session.add(r)
-        session.flush()
-        run_id = r.id
-
-        session.delete(m)
-        session.commit()
-
-        self.assertIsNone(
-            session.query(self.models.Run).get(run_id))
         session.close()
 
 

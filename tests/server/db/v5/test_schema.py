@@ -6,7 +6,6 @@ import unittest
 
 from lnt.server.db.v5.schema import (
     CommitField,
-    MachineField,
     Metric,
     SchemaError,
     parse_schema,
@@ -20,7 +19,6 @@ class TestParseSchemaBasic(unittest.TestCase):
         self.assertEqual(schema.name, "minimal")
         self.assertEqual(schema.metrics, [])
         self.assertEqual(schema.commit_fields, [])
-        self.assertEqual(schema.machine_fields, [])
 
     def test_full_schema(self):
         data = {
@@ -38,10 +36,6 @@ class TestParseSchemaBasic(unittest.TestCase):
                 {"name": "commit_message", "type": "text"},
                 {"name": "commit_timestamp", "type": "datetime"},
                 {"name": "priority", "type": "integer"},
-            ],
-            "machine_fields": [
-                {"name": "hardware", "searchable": True},
-                {"name": "os", "searchable": True},
             ],
         }
         schema = parse_schema(data)
@@ -62,9 +56,6 @@ class TestParseSchemaBasic(unittest.TestCase):
         self.assertEqual(schema.commit_fields[3].type, "datetime")
         self.assertEqual(schema.commit_fields[4].type, "integer")
 
-        self.assertEqual(len(schema.machine_fields), 2)
-        self.assertTrue(schema.machine_fields[0].searchable)
-
     def test_searchable_commit_fields(self):
         data = {
             "name": "test",
@@ -79,15 +70,36 @@ class TestParseSchemaBasic(unittest.TestCase):
         self.assertEqual(schema.searchable_commit_fields[0].name, "a")
 
     def test_searchable_fields_cached(self):
-        """searchable_*_fields should return the same list object on repeated access."""
+        """searchable_commit_fields should return the same list object on repeated access."""
         data = {
             "name": "test",
             "commit_fields": [{"name": "a", "searchable": True}],
-            "machine_fields": [{"name": "hw", "searchable": True}],
         }
         schema = parse_schema(data)
         self.assertIs(schema.searchable_commit_fields, schema.searchable_commit_fields)
-        self.assertIs(schema.searchable_machine_fields, schema.searchable_machine_fields)
+
+    def test_machine_fields_silently_ignored(self):
+        """The machine_fields key, if present, should be silently ignored."""
+        data = {
+            "name": "test",
+            "machine_fields": [
+                {"name": "hardware", "searchable": True},
+                {"name": "os"},
+            ],
+        }
+        schema = parse_schema(data)
+        self.assertEqual(schema.name, "test")
+        # No machine_fields attribute on the schema
+        self.assertFalse(hasattr(schema, "machine_fields"))
+
+    def test_schema_without_machine_fields_parses(self):
+        """Schema without machine_fields should parse normally."""
+        data = {
+            "name": "test",
+            "metrics": [{"name": "time", "type": "real"}],
+        }
+        schema = parse_schema(data)
+        self.assertEqual(schema.name, "test")
 
 
 class TestSchemaValidation(unittest.TestCase):
@@ -132,30 +144,6 @@ class TestSchemaValidation(unittest.TestCase):
                 "commit_fields": [{"name": "tag"}],
             })
 
-    def test_reserved_machine_field_id(self):
-        data = {
-            "name": "test",
-            "machine_fields": [{"name": "id"}],
-        }
-        with self.assertRaises(SchemaError):
-            parse_schema(data)
-
-    def test_reserved_machine_field_name(self):
-        data = {
-            "name": "test",
-            "machine_fields": [{"name": "name"}],
-        }
-        with self.assertRaises(SchemaError):
-            parse_schema(data)
-
-    def test_reserved_machine_field_parameters(self):
-        data = {
-            "name": "test",
-            "machine_fields": [{"name": "parameters"}],
-        }
-        with self.assertRaises(SchemaError):
-            parse_schema(data)
-
     def test_unknown_commit_field_type(self):
         data = {
             "name": "test",
@@ -176,14 +164,6 @@ class TestSchemaValidation(unittest.TestCase):
         data = {
             "name": "test",
             "commit_fields": [{"name": "a"}, {"name": "a"}],
-        }
-        with self.assertRaises(SchemaError):
-            parse_schema(data)
-
-    def test_duplicate_machine_field(self):
-        data = {
-            "name": "test",
-            "machine_fields": [{"name": "a"}, {"name": "a"}],
         }
         with self.assertRaises(SchemaError):
             parse_schema(data)
@@ -320,11 +300,6 @@ class TestDataclassImmutability(unittest.TestCase):
         cf = CommitField(name="x")
         with self.assertRaises(AttributeError):
             cf.name = "y"
-
-    def test_machine_field_frozen(self):
-        mf = MachineField(name="x")
-        with self.assertRaises(AttributeError):
-            mf.name = "y"
 
     def test_metric_frozen(self):
         m = Metric(name="x")

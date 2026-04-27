@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import datetime
 import json
+import re
 import sys
 import uuid as uuid_module
 from typing import Any, Iterable
@@ -30,6 +31,7 @@ import sqlalchemy
 import sqlalchemy.exc
 import sqlalchemy.orm
 from sqlalchemy import or_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from .models import (
@@ -57,6 +59,11 @@ REGRESSION_STATES = {
     4: "false_positive",
 }
 VALID_REGRESSION_STATES = frozenset(REGRESSION_STATES)
+
+_PARAM_KEY_RE = re.compile(r'^[a-zA-Z0-9_]+$')
+_RESERVED_PARAM_NAMES = frozenset({
+    'commit', 'test', 'metric', 'sort', 'cursor', 'limit', 'run', 'search',
+})
 
 
 def _escape_like(s: str) -> str:
@@ -155,13 +162,6 @@ class V5DB:
                     **({"display": True} if cf.display else {}),
                 }
                 for cf in schema.commit_fields
-            ],
-            "machine_fields": [
-                {
-                    "name": mf.name,
-                    **({"searchable": True} if mf.searchable else {}),
-                }
-                for mf in schema.machine_fields
             ],
         }
 
@@ -306,16 +306,17 @@ class V5TestSuiteDB:
         self.schema = schema
         self.models = models
         self._commit_field_names: frozenset[str] = frozenset(cf.name for cf in schema.commit_fields)
-        self._machine_field_names: frozenset[str] = frozenset(mf.name for mf in schema.machine_fields)
         self._metric_names: frozenset[str] = frozenset(m.name for m in schema.metrics)
         self.Commit = models.Commit
-        self.Machine = models.Machine
         self.Run = models.Run
         self.Test = models.Test
         self.Sample = models.Sample
         self.Profile = models.Profile
         self.Regression = models.Regression
         self.RegressionIndicator = models.RegressionIndicator
+        self.ParameterKey = models.ParameterKey
+        self.ParameterValue = models.ParameterValue
+        self.DashboardCard = models.DashboardCard
 
     # ===================================================================
     # Field / metric validation
@@ -328,15 +329,6 @@ class V5TestSuiteDB:
             raise ValueError(
                 f"Unknown commit field(s): {', '.join(sorted(unknown))}. "
                 f"Valid names: {', '.join(sorted(self._commit_field_names))}"
-            )
-
-    def _validate_machine_fields(self, keys: Iterable[str]) -> None:
-        """Raise ValueError if *keys* contains names not in the schema."""
-        unknown = set(keys) - self._machine_field_names
-        if unknown:
-            raise ValueError(
-                f"Unknown machine field(s): {', '.join(sorted(unknown))}. "
-                f"Valid names: {', '.join(sorted(self._machine_field_names))}"
             )
 
     def _validate_metric_names(self, keys: Iterable[str]) -> None:
@@ -511,7 +503,8 @@ class V5TestSuiteDB:
         """Delete a commit by ID (cascades to runs and samples).
 
         Raises ``ValueError`` if any Regressions reference this commit
-        (via ``commit_id``).  Those must be updated first.
+        (via ``commit_id``), or if any RegressionIndicators reference
+        runs at this commit.  Those must be updated/removed first.
         """
         commit = session.query(self.Commit).get(commit_id)
         if commit is None:
@@ -526,164 +519,25 @@ class V5TestSuiteDB:
             raise ValueError(
                 f"Cannot delete commit {commit_id}: "
                 f"{reg_count} Regression(s) reference it; "
-                f"clear their commit_id first"
+                f"update or delete them first"
+            )
+
+        # Check for indicators referencing runs at this commit.
+        indicator_count = (
+            session.query(self.RegressionIndicator)
+            .join(self.Run, self.RegressionIndicator.run_id == self.Run.id)
+            .filter(self.Run.commit_id == commit_id)
+            .count()
+        )
+        if indicator_count > 0:
+            raise ValueError(
+                f"Cannot delete commit {commit_id}: "
+                f"{indicator_count} RegressionIndicator(s) reference runs "
+                f"at this commit; remove them first"
             )
 
         session.delete(commit)
         session.flush()
-
-    # ===================================================================
-    # Machines
-    # ===================================================================
-
-    def get_or_create_machine(
-        self,
-        session: sqlalchemy.orm.Session,
-        name: str,
-        *,
-        strategy: str = "reject",
-        parameters: dict[str, Any] | None = None,
-        **fields: Any,
-    ):
-        """Get or create a Machine by name.
-
-        With ``strategy='reject'`` (default), raises ``ValueError`` if the
-        existing machine's schema-defined fields differ from *fields*.
-
-        Uses a savepoint so that a concurrent insert by another session
-        does not invalidate earlier work in the same transaction.
-        """
-        self._validate_machine_fields(fields.keys())
-        existing = (
-            session.query(self.Machine)
-            .filter(self.Machine.name == name)
-            .first()
-        )
-        if existing is not None:
-            self._apply_machine_fields(existing, strategy, parameters, fields)
-            return existing
-
-        machine = self.Machine()
-        machine.name = name
-        for key, value in fields.items():
-            setattr(machine, key, value)
-        machine.parameters = parameters or {}
-        try:
-            with session.begin_nested():
-                session.add(machine)
-                session.flush()
-        except sqlalchemy.exc.IntegrityError:
-            # Race condition: another session created it between our
-            # SELECT and INSERT.  Re-query and apply field merge logic.
-            existing = (
-                session.query(self.Machine)
-                .filter(self.Machine.name == name)
-                .first()
-            )
-            if existing is None:
-                raise  # pragma: no cover
-            self._apply_machine_fields(existing, strategy, parameters, fields)
-            return existing
-        return machine
-
-    def _apply_machine_fields(
-        self,
-        machine,
-        strategy: str,
-        parameters: dict[str, Any] | None,
-        fields: dict[str, Any],
-    ):
-        """Apply field merge / parameter merge logic to an existing machine."""
-        if strategy == "reject":
-            for key, value in fields.items():
-                if value is None:
-                    continue
-                existing_value = getattr(machine, key, None)
-                if existing_value is not None and existing_value != value:
-                    raise ValueError(
-                        f"Machine {machine.name!r}: field {key!r} changed "
-                        f"from {existing_value!r} to {value!r}"
-                    )
-                if existing_value is None:
-                    setattr(machine, key, value)
-        elif strategy == "update":
-            for key, value in fields.items():
-                if value is not None:
-                    setattr(machine, key, value)
-        if parameters:
-            merged = dict(machine.parameters or {})
-            merged.update(parameters)
-            machine.parameters = merged
-
-    def get_machine(
-        self,
-        session: sqlalchemy.orm.Session,
-        *,
-        id: int | None = None,
-        name: str | None = None,
-    ):
-        """Fetch a single Machine by id or name."""
-        q = session.query(self.Machine)
-        if id is not None:
-            return q.filter(self.Machine.id == id).first()
-        if name is not None:
-            return q.filter(self.Machine.name == name).first()
-        raise ValueError("must specify id or name")
-
-    def list_machines(
-        self,
-        session: sqlalchemy.orm.Session,
-        *,
-        search: str | None = None,
-        limit: int | None = None,
-    ) -> list:
-        """List machines with optional search.
-
-        *search* performs case-insensitive OR substring matching across
-        ``name`` and all ``searchable`` machine_fields.
-        """
-        q = session.query(self.Machine)
-        if search:
-            escaped = _escape_like(search)
-            pattern = f"%{escaped}%"
-            clauses = [self.Machine.name.ilike(pattern, escape="\\")]
-            for mf in self.schema.searchable_machine_fields:
-                col = getattr(self.Machine, mf.name)
-                clauses.append(col.ilike(pattern, escape="\\"))
-            q = q.filter(or_(*clauses))
-        return q.order_by(self.Machine.id).limit(limit if limit is not None else DEFAULT_LIMIT).all()
-
-    def delete_machine(self, session: sqlalchemy.orm.Session, machine_id: int) -> None:
-        """Delete a machine by ID (cascades to runs and samples)."""
-        machine = session.query(self.Machine).get(machine_id)
-        if machine is not None:
-            session.delete(machine)
-            session.flush()
-
-    def update_machine(
-        self,
-        session: sqlalchemy.orm.Session,
-        machine,
-        *,
-        name: str | None = None,
-        parameters: dict[str, Any] | None = None,
-        **fields: Any,
-    ):
-        """Update mutable fields on a Machine.
-
-        *name* renames the machine (caller must ensure uniqueness).
-        *parameters* replaces the JSONB blob.
-        Additional keyword arguments update schema-defined machine_fields.
-        """
-        if name is not None:
-            machine.name = name
-        if parameters is not None:
-            machine.parameters = parameters
-        self._validate_machine_fields(fields.keys())
-        for key, value in fields.items():
-            setattr(machine, key, value)
-        session.flush()
-        return machine
 
     # ===================================================================
     # Runs
@@ -692,13 +546,12 @@ class V5TestSuiteDB:
     def create_run(
         self,
         session: sqlalchemy.orm.Session,
-        machine,
         *,
         commit,
         submitted_at: datetime.datetime | None = None,
         run_parameters: dict[str, Any] | None = None,
     ):
-        """Create a new Run attached to *machine* and *commit*.
+        """Create a new Run attached to *commit*.
 
         *commit* is required -- every run must have a commit (design D2).
         """
@@ -706,7 +559,6 @@ class V5TestSuiteDB:
             raise ValueError("commit is required (every run must have a commit)")
         run = self.Run()
         run.uuid = str(uuid_module.uuid4())
-        run.machine_id = machine.id
         run.commit_id = commit.id
         run.submitted_at = submitted_at or utcnow()
         run.run_parameters = run_parameters or {}
@@ -733,14 +585,19 @@ class V5TestSuiteDB:
         self,
         session: sqlalchemy.orm.Session,
         *,
-        machine_id: int | None = None,
+        params: dict[str, str | list[str]] | None = None,
         commit_id: int | None = None,
         limit: int | None = None,
     ) -> list:
-        """List runs with optional filters."""
+        """List runs with optional filters.
+
+        *params* is a dict of parameter key -> value(s) for JSONB containment
+        filtering. Multiple values for the same key are OR-combined; different
+        keys are AND-combined.
+        """
         q = session.query(self.Run)
-        if machine_id is not None:
-            q = q.filter(self.Run.machine_id == machine_id)
+        if params:
+            q = q.filter(self._build_params_filter(self.Run, params))
         if commit_id is not None:
             q = q.filter(self.Run.commit_id == commit_id)
         q = q.order_by(self.Run.id)
@@ -748,11 +605,29 @@ class V5TestSuiteDB:
         return q.all()
 
     def delete_run(self, session: sqlalchemy.orm.Session, run_id: int) -> None:
-        """Delete a run by ID (cascades to samples)."""
+        """Delete a run by ID (cascades to samples).
+
+        Raises ``ValueError`` if any RegressionIndicators reference this run.
+        Indicators must be removed first.
+        """
         run = session.query(self.Run).get(run_id)
-        if run is not None:
-            session.delete(run)
-            session.flush()
+        if run is None:
+            return
+
+        indicator_count = (
+            session.query(self.RegressionIndicator)
+            .filter(self.RegressionIndicator.run_id == run_id)
+            .count()
+        )
+        if indicator_count > 0:
+            raise ValueError(
+                f"Cannot delete run {run_id}: "
+                f"{indicator_count} RegressionIndicator(s) reference it; "
+                f"remove them first"
+            )
+
+        session.delete(run)
+        session.flush()
 
     # ===================================================================
     # Tests & Samples
@@ -992,20 +867,21 @@ class V5TestSuiteDB:
     def query_time_series(
         self,
         session: sqlalchemy.orm.Session,
-        machine,
         test,
         metric: str,
         *,
+        params: dict[str, str | list[str]] | None = None,
         commit_range: tuple[int, int] | None = None,
         time_range: tuple[datetime.datetime, datetime.datetime] | None = None,
         sort: str | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Query time-series data for a (machine, test, metric) triple.
+        """Query time-series data for a (parameter set, test, metric) combination.
 
         Returns a list of dicts with keys: ``commit``, ``ordinal``, ``tag``,
         ``value``, ``run_id``, ``submitted_at``.
 
+        *params* is a dict for JSONB containment filtering on ``run_parameters``.
         *commit_range* filters by ordinal [lo, hi].  When sorting by ordinal,
         commits without ordinals are excluded.
         """
@@ -1025,10 +901,12 @@ class V5TestSuiteDB:
             .select_from(self.Sample)
             .join(self.Run, self.Sample.run_id == self.Run.id)
             .join(self.Commit, self.Run.commit_id == self.Commit.id)
-            .filter(self.Run.machine_id == machine.id)
             .filter(self.Sample.test_id == test.id)
             .filter(metric_col.isnot(None))
         )
+
+        if params:
+            q = q.filter(self._build_params_filter(self.Run, params))
 
         if commit_range is not None:
             lo, hi = commit_range
@@ -1050,8 +928,10 @@ class V5TestSuiteDB:
             q = q.order_by(self.Commit.ordinal)
         elif sort == "submitted_at":
             q = q.order_by(self.Run.submitted_at)
+        elif sort is not None:
+            raise ValueError("Unknown sort field: %r" % sort)
         else:
-            q = q.order_by(self.Run.id)
+            q = q.order_by(self.Sample.id)
 
         if limit is not None:
             q = q.limit(limit)
@@ -1073,22 +953,22 @@ class V5TestSuiteDB:
         session: sqlalchemy.orm.Session,
         metric: str,
         *,
-        machine_ids: list[int] | None = None,
+        params: dict[str, str | list[str]] | None = None,
         last_n: int | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Query geomean-aggregated trend data grouped by (machine, commit).
+        """Query geomean-aggregated trend data grouped by commit.
 
         Computes ``exp(avg(ln(metric)))`` over all samples for each
-        (machine, commit) pair.  Only positive metric values are included
-        (required for ``ln``).  Only commits with a non-null ordinal are
-        included.
+        commit.  Only positive metric values are included (required for
+        ``ln``).  Only commits with a non-null ordinal are included.
 
+        *params* is a dict for JSONB containment filtering on ``run_parameters``.
         *last_n* limits results to the most recent N commits by ordinal.
         *limit* caps the total number of rows returned.
 
-        Returns a list of dicts with keys: ``machine_name``, ``commit``,
-        ``ordinal``, ``tag``, ``value``, ``submitted_at``.
+        Returns a list of dicts with keys: ``commit``, ``ordinal``, ``tag``,
+        ``value``, ``submitted_at``.
         """
         from sqlalchemy import func
 
@@ -1098,7 +978,6 @@ class V5TestSuiteDB:
 
         q = (
             session.query(
-                self.Machine.name.label("machine_name"),
                 self.Commit.id.label("commit_id"),
                 self.Commit.commit,
                 self.Commit.ordinal,
@@ -1109,17 +988,15 @@ class V5TestSuiteDB:
             .select_from(self.Sample)
             .join(self.Run, self.Sample.run_id == self.Run.id)
             .join(self.Commit, self.Run.commit_id == self.Commit.id)
-            .join(self.Machine, self.Run.machine_id == self.Machine.id)
             .filter(metric_col > 0)
             .filter(self.Commit.ordinal.isnot(None))
         )
 
-        if machine_ids:
-            q = q.filter(self.Machine.id.in_(machine_ids))
+        if params:
+            q = q.filter(self._build_params_filter(self.Run, params))
 
         if last_n is not None:
             # Find the ordinal cutoff: the Nth-highest ordinal.
-            # Commit.ordinal has a unique constraint -> implicit B-tree index.
             cutoff = (
                 session.query(self.Commit.ordinal)
                 .filter(self.Commit.ordinal.isnot(None))
@@ -1133,12 +1010,12 @@ class V5TestSuiteDB:
             # If cutoff is None, fewer than last_n commits exist -- return all.
 
         q = q.group_by(
-            self.Machine.name, self.Commit.id,
+            self.Commit.id,
             self.Commit.commit, self.Commit.ordinal,
             self.Commit.tag,
         )
 
-        q = q.order_by(self.Machine.name, self.Commit.ordinal.asc())
+        q = q.order_by(self.Commit.ordinal.asc())
 
         if limit is not None:
             q = q.limit(limit)
@@ -1146,7 +1023,6 @@ class V5TestSuiteDB:
         results = []
         for row in q.all():
             results.append({
-                "machine_name": row.machine_name,
                 "commit": row.commit,
                 "ordinal": row.ordinal,
                 "tag": row.tag,
@@ -1167,32 +1043,55 @@ class V5TestSuiteDB:
         *,
         bug: str | None = None,
         notes: str | None = None,
-        commit: Any | None = None,
+        commit,
         state: int = 0,
     ):
         """Create a Regression with the given indicators.
 
-        Each dict in *indicators* must have keys ``machine_id`` (int),
+        Each dict in *indicators* must have keys ``run_id`` (int),
         ``test_id`` (int), and ``metric`` (str).
 
-        *commit* is an optional Commit object whose id is stored on the
-        Regression (nullable FK).
+        *commit* is required -- a regression is always created at a specific
+        commit.  All indicator runs must share this commit (validated here).
         """
         _validate_regression_state(state)
+        if commit is None:
+            raise ValueError("commit is required (a regression must have a commit)")
         reg = self.Regression()
         reg.uuid = str(uuid_module.uuid4())
         reg.title = title
         reg.bug = bug
         reg.notes = notes
         reg.state = state
-        reg.commit_id = commit.id if commit is not None else None
+        reg.commit_id = commit.id
         session.add(reg)
         session.flush()
+
+        # Validate all indicator runs share the regression's commit.
+        if indicators:
+            run_ids = {ind["run_id"] for ind in indicators}
+            runs = (
+                session.query(self.Run.id, self.Run.commit_id)
+                .filter(self.Run.id.in_(run_ids))
+                .all()
+            )
+            found_ids = {r.id for r in runs}
+            missing = run_ids - found_ids
+            if missing:
+                raise ValueError(
+                    f"run_id(s) not found: {sorted(missing)}"
+                )
+            bad = [r.id for r in runs if r.commit_id != commit.id]
+            if bad:
+                raise ValueError(
+                    f"indicator run(s) {bad} do not belong to "
+                    f"the regression's commit"
+                )
 
         ri_objects = []
         for ind in indicators:
             ri_objects.append(
-                self._build_indicator(reg.id, ind["machine_id"],
+                self._build_indicator(reg.id, ind["run_id"],
                                       ind["test_id"], ind["metric"]))
         session.add_all(ri_objects)
         session.flush()
@@ -1228,9 +1127,14 @@ class V5TestSuiteDB:
     ):
         """Update mutable fields on a Regression.
 
-        For *title*, *bug*, *notes*, and *commit*: pass a value to set,
-        ``None`` to clear, or omit (default ``_UNSET``) to leave unchanged.
+        For *title*, *bug*, and *notes*: pass a value to set, ``None`` to
+        clear, or omit (default ``_UNSET``) to leave unchanged.
+        *commit* must be a Commit object (cannot be set to None since
+        commit_id is NOT NULL). Omit to leave unchanged.
         *state* uses ``None`` as "leave unchanged" (state cannot be null).
+
+        When *commit* is changed, all existing indicators are re-validated:
+        each indicator's run must belong to the new commit.
         """
         if title is not self._UNSET:
             regression.title = title
@@ -1239,7 +1143,28 @@ class V5TestSuiteDB:
         if notes is not self._UNSET:
             regression.notes = notes
         if commit is not self._UNSET:
-            regression.commit_id = commit.id if commit is not None else None
+            if commit is None:
+                raise ValueError(
+                    "commit_id is NOT NULL -- cannot clear the commit on a regression"
+                )
+            regression.commit_id = commit.id
+            # Re-validate existing indicators against the new commit.
+            bad_runs = (
+                session.query(self.Run.id)
+                .filter(
+                    self.Run.id.in_(
+                        session.query(self.RegressionIndicator.run_id)
+                        .filter_by(regression_id=regression.id)
+                    ),
+                    self.Run.commit_id != commit.id,
+                )
+                .all()
+            )
+            if bad_runs:
+                raise ValueError(
+                    "Cannot change commit: %d indicator run(s) belong to a "
+                    "different commit" % len(bad_runs)
+                )
         if state is not None:
             _validate_regression_state(state)
             regression.state = state
@@ -1270,12 +1195,12 @@ class V5TestSuiteDB:
             session.delete(reg)
             session.flush()
 
-    def _build_indicator(self, regression_id, machine_id, test_id, metric):
+    def _build_indicator(self, regression_id, run_id, test_id, metric):
         """Construct a RegressionIndicator object (not yet added to session)."""
         ri = self.RegressionIndicator()
         ri.uuid = str(uuid_module.uuid4())
         ri.regression_id = regression_id
-        ri.machine_id = machine_id
+        ri.run_id = run_id
         ri.test_id = test_id
         ri.metric = metric
         return ri
@@ -1284,17 +1209,26 @@ class V5TestSuiteDB:
         self,
         session: sqlalchemy.orm.Session,
         regression,
-        machine_id: int,
+        run_id: int,
         test_id: int,
         metric: str,
     ):
         """Add an indicator to a Regression.
 
+        Validates that the run's commit matches the regression's commit.
         Returns the created RegressionIndicator.  Raises
-        ``sqlalchemy.exc.IntegrityError`` if the (regression, machine,
-        test, metric) combination already exists.
+        ``sqlalchemy.exc.IntegrityError`` if the (regression, run, test,
+        metric) combination already exists.
         """
-        ri = self._build_indicator(regression.id, machine_id, test_id, metric)
+        run = session.query(self.Run).get(run_id)
+        if run is None:
+            raise ValueError(f"run_id {run_id} not found")
+        if run.commit_id != regression.commit_id:
+            raise ValueError(
+                f"run {run_id} belongs to commit {run.commit_id}, "
+                f"but regression requires commit {regression.commit_id}"
+            )
+        ri = self._build_indicator(regression.id, run_id, test_id, metric)
         session.add(ri)
         session.flush()
         return ri
@@ -1307,18 +1241,36 @@ class V5TestSuiteDB:
     ) -> list:
         """Add multiple indicators to a Regression, silently ignoring duplicates.
 
-        Each dict must have keys ``machine_id``, ``test_id``, ``metric``.
+        Each dict must have keys ``run_id``, ``test_id``, ``metric``.
+        Validates that all indicator runs share the regression's commit.
         Returns the list of newly created RegressionIndicator objects
         (excludes duplicates that were skipped).
-
-        Note: the check-then-insert has a TOCTOU window under concurrent
-        access.  The unique constraint catches this at the DB level; the
-        API layer is expected to serialize regression updates.
         """
+        if not indicators:
+            return []
+
+        # Validate all runs share the regression's commit.
+        run_ids = {ind["run_id"] for ind in indicators}
+        runs = (
+            session.query(self.Run.id, self.Run.commit_id)
+            .filter(self.Run.id.in_(run_ids))
+            .all()
+        )
+        found_ids = {r.id for r in runs}
+        missing = run_ids - found_ids
+        if missing:
+            raise ValueError(f"run_id(s) not found: {sorted(missing)}")
+        bad = [r.id for r in runs if r.commit_id != regression.commit_id]
+        if bad:
+            raise ValueError(
+                f"indicator run(s) {bad} do not belong to "
+                f"the regression's commit"
+            )
+
         # Fetch all existing indicators for this regression in one query.
         existing_rows = (
             session.query(
-                self.RegressionIndicator.machine_id,
+                self.RegressionIndicator.run_id,
                 self.RegressionIndicator.test_id,
                 self.RegressionIndicator.metric,
             )
@@ -1326,16 +1278,16 @@ class V5TestSuiteDB:
             .all()
         )
         existing_keys = {
-            (r.machine_id, r.test_id, r.metric) for r in existing_rows
+            (r.run_id, r.test_id, r.metric) for r in existing_rows
         }
 
         created = []
         for ind in indicators:
-            key = (ind["machine_id"], ind["test_id"], ind["metric"])
+            key = (ind["run_id"], ind["test_id"], ind["metric"])
             if key in existing_keys:
                 continue
             ri = self._build_indicator(
-                regression.id, ind["machine_id"],
+                regression.id, ind["run_id"],
                 ind["test_id"], ind["metric"])
             session.add(ri)
             created.append(ri)
@@ -1381,35 +1333,208 @@ class V5TestSuiteDB:
         raise ValueError("must specify id or uuid")
 
     # ===================================================================
-    # Bulk import (run submission) -- helpers
+    # Parameter validation and upsert
     # ===================================================================
 
-    def _parse_machine_data(
-        self,
-        data: dict[str, Any],
-    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
-        """Extract machine name, schema-defined fields, and extra parameters
-        from the submission data.
+    def _validate_run_parameters(self, run_parameters: dict[str, Any]) -> dict[str, str]:
+        """Validate and coerce run parameters.
 
-        Returns ``(name, fields, params)``.
+        Keys must match ``[a-zA-Z0-9_]+`` and must not use reserved names.
+        All values are coerced to strings via ``str()``.
+        Returns the coerced dict.
         """
-        machine_data = data.get("machine", {})
-        machine_name = machine_data.get("name")
-        if not machine_name:
-            raise ValueError("machine.name is required")
+        coerced: dict[str, str] = {}
+        for key, value in run_parameters.items():
+            if not _PARAM_KEY_RE.match(key):
+                raise ValueError(
+                    f"invalid run_parameters key {key!r}: "
+                    f"must match [a-zA-Z0-9_]+"
+                )
+            if key in _RESERVED_PARAM_NAMES:
+                raise ValueError(
+                    f"run_parameters key {key!r} is reserved "
+                    f"(cannot use: {sorted(_RESERVED_PARAM_NAMES)})"
+                )
+            coerced[key] = str(value)
+        return coerced
 
-        valid_machine_fields = self._machine_field_names
-        machine_fields: dict[str, Any] = {}
-        machine_params: dict[str, Any] = {}
-        for key, value in machine_data.items():
-            if key == "name":
-                continue
-            if key in valid_machine_fields:
-                machine_fields[key] = value
+    def _upsert_parameter_keys_and_values(
+        self,
+        session: sqlalchemy.orm.Session,
+        run_parameters: dict[str, str],
+    ) -> None:
+        """Batch upsert parameter keys and (key, value) pairs.
+
+        Uses INSERT ... ON CONFLICT DO NOTHING for concurrency safety.
+        """
+        if not run_parameters:
+            return
+
+        # Upsert keys
+        key_rows = [{"key": k} for k in run_parameters]
+        stmt = (
+            pg_insert(self.ParameterKey.__table__)
+            .values(key_rows)
+            .on_conflict_do_nothing(index_elements=["key"])
+        )
+        session.execute(stmt)
+
+        # Fetch key IDs for the values upsert
+        keys = list(run_parameters.keys())
+        key_id_rows = (
+            session.query(self.ParameterKey.id, self.ParameterKey.key)
+            .filter(self.ParameterKey.key.in_(keys))
+            .all()
+        )
+        key_to_id = {r.key: r.id for r in key_id_rows}
+
+        # Upsert (key_id, value) pairs
+        value_rows = [
+            {"key_id": key_to_id[k], "value": v}
+            for k, v in run_parameters.items()
+            if k in key_to_id
+        ]
+        if value_rows:
+            stmt = (
+                pg_insert(self.ParameterValue.__table__)
+                .values(value_rows)
+                .on_conflict_do_nothing(
+                    constraint=f"uq_{self.name}_pv_key_value",
+                )
+            )
+            session.execute(stmt)
+
+    # ===================================================================
+    # Parameter query helpers
+    # ===================================================================
+
+    @staticmethod
+    def _build_params_filter(model_class, params: dict[str, str | list[str]]):
+        """Build a SQLAlchemy filter for JSONB containment on run_parameters.
+
+        For each key with one value, emit a single ``@>`` clause.
+        For each key with multiple values, emit ``OR`` of ``@>`` clauses.
+        Then ``AND`` all key clauses together.
+
+        *model_class* must have a ``run_parameters`` column.
+
+        Returns ``None`` if *params* is empty.
+        """
+        if not params:
+            return None
+
+        from sqlalchemy import and_
+
+        key_clauses = []
+        for key, values in params.items():
+            if isinstance(values, str):
+                values = [values]
+            if len(values) == 1:
+                key_clauses.append(
+                    model_class.run_parameters.op("@>")(
+                        sqlalchemy.type_coerce({key: values[0]}, JSONB)
+                    )
+                )
             else:
-                machine_params[key] = value
+                or_clauses = [
+                    model_class.run_parameters.op("@>")(
+                        sqlalchemy.type_coerce({key: v}, JSONB)
+                    )
+                    for v in values
+                ]
+                key_clauses.append(or_(*or_clauses))
 
-        return machine_name, machine_fields, machine_params
+        if len(key_clauses) == 1:
+            return key_clauses[0]
+        return and_(*key_clauses)
+
+    # ===================================================================
+    # Parameter discovery
+    # ===================================================================
+
+    def list_parameter_keys(
+        self,
+        session: sqlalchemy.orm.Session,
+        *,
+        search: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> list:
+        """Query ParameterKey with optional ILIKE prefix match."""
+        q = session.query(self.ParameterKey)
+        if search:
+            escaped = _escape_like(search)
+            pattern = f"{escaped}%"
+            q = q.filter(self.ParameterKey.key.ilike(pattern, escape="\\"))
+        q = q.order_by(self.ParameterKey.key)
+        q = q.offset(offset).limit(limit)
+        return q.all()
+
+    def list_parameter_values(
+        self,
+        session: sqlalchemy.orm.Session,
+        key_name: str,
+        *,
+        search: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> list:
+        """Query ParameterValue joined to ParameterKey for a given key name."""
+        q = (
+            session.query(self.ParameterValue)
+            .join(self.ParameterKey,
+                  self.ParameterValue.key_id == self.ParameterKey.id)
+            .filter(self.ParameterKey.key == key_name)
+        )
+        if search:
+            escaped = _escape_like(search)
+            pattern = f"{escaped}%"
+            q = q.filter(self.ParameterValue.value.ilike(pattern, escape="\\"))
+        q = q.order_by(self.ParameterValue.value)
+        q = q.offset(offset).limit(limit)
+        return q.all()
+
+    # ===================================================================
+    # Dashboard CRUD
+    # ===================================================================
+
+    def get_dashboard_cards(
+        self,
+        session: sqlalchemy.orm.Session,
+    ) -> list:
+        """Query DashboardCard ordered by position."""
+        return (
+            session.query(self.DashboardCard)
+            .order_by(self.DashboardCard.position)
+            .all()
+        )
+
+    def set_dashboard_cards(
+        self,
+        session: sqlalchemy.orm.Session,
+        cards: list[dict[str, Any]],
+    ) -> list:
+        """Delete all existing cards and insert new ones.
+
+        Each dict in *cards* must have keys ``position``, ``params``,
+        ``metric``, and optionally ``last_n``.
+        """
+        session.query(self.DashboardCard).delete()
+        created = []
+        for card_data in cards:
+            card = self.DashboardCard()
+            card.position = card_data["position"]
+            card.params = card_data.get("params", {})
+            card.metric = card_data["metric"]
+            card.last_n = card_data.get("last_n", 500)
+            session.add(card)
+            created.append(card)
+        session.flush()
+        return created
+
+    # ===================================================================
+    # Bulk import (run submission) -- helpers
+    # ===================================================================
 
     def _parse_commit_data(
         self,
@@ -1512,12 +1637,8 @@ class V5TestSuiteDB:
         self,
         session: sqlalchemy.orm.Session,
         data: dict[str, Any],
-        *,
-        machine_strategy: str = "reject",
     ):
         """Import a run from the v5 submission format.
-
-        See the implementation plan (Phase 1c) for the expected JSON schema.
 
         Returns the created Run.
         """
@@ -1527,27 +1648,22 @@ class V5TestSuiteDB:
                 f"format_version is required and must be '5', got {fmt!r}"
             )
 
-        # -- Machine --------------------------------------------------------
-        machine_name, machine_fields, machine_params = self._parse_machine_data(data)
-        machine = self.get_or_create_machine(
-            session,
-            machine_name,
-            strategy=machine_strategy,
-            parameters=machine_params if machine_params else None,
-            **machine_fields,
-        )
-
         # -- Commit (required) ----------------------------------------------
         commit_obj = self._parse_commit_data(session, data)
 
+        # -- Run parameters -------------------------------------------------
+        raw_params = data.get("run_parameters", {})
+        run_parameters = self._validate_run_parameters(raw_params)
+
         # -- Run ------------------------------------------------------------
-        run_parameters = data.get("run_parameters", {})
         run = self.create_run(
             session,
-            machine,
             commit=commit_obj,
             run_parameters=run_parameters,
         )
+
+        # -- Upsert parameter keys and values --------------------------------
+        self._upsert_parameter_keys_and_values(session, run_parameters)
 
         # -- Tests & Samples (batched) --------------------------------------
         self._parse_tests_data(session, data, run)

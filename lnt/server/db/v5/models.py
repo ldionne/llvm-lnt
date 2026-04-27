@@ -2,7 +2,7 @@
 Dynamic SQLAlchemy model factory for v5 per-suite tables.
 
 Creates model classes at runtime based on a :class:`TestSuiteSchema`, producing
-per-suite tables such as ``nts_Commit``, ``nts_Machine``, etc.
+per-suite tables such as ``nts_Commit``, ``nts_Run``, etc.
 
 Postgres only.  SQLAlchemy 1.3 style (Column, relation, declarative_base).
 """
@@ -112,13 +112,15 @@ class SuiteModels:
     """Container for all SQLAlchemy model classes of a single test suite."""
     base: Any                    # declarative base
     Commit: Any = None
-    Machine: Any = None
     Run: Any = None
     Test: Any = None
     Sample: Any = None
     Profile: Any = None
     Regression: Any = None
     RegressionIndicator: Any = None
+    ParameterKey: Any = None
+    ParameterValue: Any = None
+    DashboardCard: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -169,29 +171,6 @@ def create_suite_models(schema: TestSuiteSchema) -> SuiteModels:
     Commit = type("Commit", (base,), commit_attrs)
 
     # -----------------------------------------------------------------------
-    # Machine
-    # -----------------------------------------------------------------------
-    machine_attrs: dict[str, Any] = {
-        "__tablename__": f"{prefix}_Machine",
-        "id": Column("id", Integer, primary_key=True),
-        "name": Column("name", String(256), unique=True, nullable=False),
-        "parameters": Column(
-            "parameters", JSONB, nullable=False,
-            server_default=sqlalchemy.text("'{}'::jsonb"),
-        ),
-    }
-    for mf in schema.machine_fields:
-        if mf.name in machine_attrs:
-            raise ValueError(
-                f"machine_fields name {mf.name!r} collides with a built-in column"
-            )
-        machine_attrs[mf.name] = Column(
-            mf.name, String(256), nullable=True, index=mf.searchable,
-        )
-
-    Machine = type("Machine", (base,), machine_attrs)
-
-    # -----------------------------------------------------------------------
     # Run
     # -----------------------------------------------------------------------
     run_attrs: dict[str, Any] = {
@@ -200,11 +179,6 @@ def create_suite_models(schema: TestSuiteSchema) -> SuiteModels:
         "uuid": Column(
             "uuid", String(36), unique=True, nullable=False, index=True,
             default=lambda: str(uuid_module.uuid4()),
-        ),
-        "machine_id": Column(
-            "machine_id", Integer,
-            ForeignKey(f"{prefix}_Machine.id", ondelete="CASCADE"),
-            nullable=False, index=True,
         ),
         "commit_id": Column(
             "commit_id", Integer,
@@ -216,16 +190,17 @@ def create_suite_models(schema: TestSuiteSchema) -> SuiteModels:
             "run_parameters", JSONB, nullable=False,
             server_default=sqlalchemy.text("'{}'::jsonb"),
         ),
-        "machine": relation("Machine", foreign_keys=f"{prefix}_Run.c.machine_id"),
         "commit_obj": relation("Commit", foreign_keys=f"{prefix}_Run.c.commit_id"),
     }
 
     Run = type("Run", (base,), run_attrs)
 
-    # Compound index on (machine_id, commit_id) for time-series join pattern
+    # GIN index on run_parameters for JSONB containment queries
     Index(
-        f"ix_{prefix}_Run_machine_id_commit_id",
-        Run.machine_id, Run.commit_id,  # type: ignore[attr-defined]
+        f"ix_{prefix}_Run_run_parameters",
+        Run.run_parameters,  # type: ignore[attr-defined]
+        postgresql_using="gin",
+        postgresql_ops={"run_parameters": "jsonb_path_ops"},
     )
 
     # -----------------------------------------------------------------------
@@ -333,7 +308,7 @@ def create_suite_models(schema: TestSuiteSchema) -> SuiteModels:
         "commit_id": Column(
             "commit_id", Integer,
             ForeignKey(f"{prefix}_Commit.id"),
-            nullable=True, index=True,
+            nullable=False, index=True,
         ),
         "commit_obj": relation(
             "Commit", foreign_keys=f"{prefix}_Regression.c.commit_id",
@@ -356,9 +331,9 @@ def create_suite_models(schema: TestSuiteSchema) -> SuiteModels:
             ForeignKey(f"{prefix}_Regression.id", ondelete="CASCADE"),
             nullable=False, index=True,
         ),
-        "machine_id": Column(
-            "machine_id", Integer,
-            ForeignKey(f"{prefix}_Machine.id"),
+        "run_id": Column(
+            "run_id", Integer,
+            ForeignKey(f"{prefix}_Run.id"),
             nullable=False, index=True,
         ),
         "test_id": Column(
@@ -369,17 +344,17 @@ def create_suite_models(schema: TestSuiteSchema) -> SuiteModels:
         "metric": Column("metric", String(256), nullable=False),
         "__table_args__": (
             UniqueConstraint(
-                "regression_id", "machine_id", "test_id", "metric",
-                name=f"uq_{prefix}_ri_reg_machine_test_metric",
+                "regression_id", "run_id", "test_id", "metric",
+                name=f"uq_{prefix}_ri_reg_run_test_metric",
             ),
         ),
         "regression": relation(
             "Regression",
             foreign_keys=f"{prefix}_RegressionIndicator.c.regression_id",
         ),
-        "machine": relation(
-            "Machine",
-            foreign_keys=f"{prefix}_RegressionIndicator.c.machine_id",
+        "run": relation(
+            "Run",
+            foreign_keys=f"{prefix}_RegressionIndicator.c.run_id",
         ),
         "test": relation(
             "Test",
@@ -389,15 +364,60 @@ def create_suite_models(schema: TestSuiteSchema) -> SuiteModels:
     RegressionIndicator = type("RegressionIndicator", (base,), ri_attrs)
 
     # -----------------------------------------------------------------------
+    # ParameterKey
+    # -----------------------------------------------------------------------
+    pk_attrs: dict[str, Any] = {
+        "__tablename__": f"{prefix}_ParameterKey",
+        "id": Column("id", Integer, primary_key=True),
+        "key": Column("key", String(256), unique=True, nullable=False),
+    }
+    ParameterKey = type("ParameterKey", (base,), pk_attrs)
+
+    # -----------------------------------------------------------------------
+    # ParameterValue
+    # -----------------------------------------------------------------------
+    pv_attrs: dict[str, Any] = {
+        "__tablename__": f"{prefix}_ParameterValue",
+        "id": Column("id", Integer, primary_key=True),
+        "key_id": Column(
+            "key_id", Integer,
+            ForeignKey(f"{prefix}_ParameterKey.id"),
+            nullable=False,
+        ),
+        "value": Column("value", String(256), nullable=False),
+        "__table_args__": (
+            UniqueConstraint(
+                "key_id", "value",
+                name=f"uq_{prefix}_pv_key_value",
+            ),
+        ),
+        "parameter_key": relation(
+            "ParameterKey",
+            foreign_keys=f"{prefix}_ParameterValue.c.key_id",
+        ),
+    }
+    ParameterValue = type("ParameterValue", (base,), pv_attrs)
+
+    # -----------------------------------------------------------------------
+    # DashboardCard
+    # -----------------------------------------------------------------------
+    dc_attrs: dict[str, Any] = {
+        "__tablename__": f"{prefix}_DashboardCard",
+        "id": Column("id", Integer, primary_key=True),
+        "position": Column("position", Integer, nullable=False),
+        "params": Column(
+            "params", JSONB, nullable=False,
+            server_default=sqlalchemy.text("'{}'::jsonb"),
+        ),
+        "metric": Column("metric", String(256), nullable=False),
+        "last_n": Column("last_n", Integer, nullable=False,
+                         server_default=sqlalchemy.text("500")),
+    }
+    DashboardCard = type("DashboardCard", (base,), dc_attrs)
+
+    # -----------------------------------------------------------------------
     # Back-references (added after all classes exist)
     # -----------------------------------------------------------------------
-    Machine.runs = relation(  # type: ignore[attr-defined]
-        Run,
-        foreign_keys=[Run.machine_id],  # type: ignore[attr-defined]
-        back_populates="machine",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
     Commit.runs = relation(  # type: ignore[attr-defined]
         Run,
         foreign_keys=[Run.commit_id],  # type: ignore[attr-defined]
@@ -444,11 +464,13 @@ def create_suite_models(schema: TestSuiteSchema) -> SuiteModels:
     return SuiteModels(
         base=base,
         Commit=Commit,
-        Machine=Machine,
         Run=Run,
         Test=Test,
         Sample=Sample,
         Profile=Profile,
         Regression=Regression,
         RegressionIndicator=RegressionIndicator,
+        ParameterKey=ParameterKey,
+        ParameterValue=ParameterValue,
+        DashboardCard=DashboardCard,
     )
