@@ -2,18 +2,16 @@
 // Suite-agnostic — served at /v5/.
 
 import type { PageModule, RouteParams } from '../router';
-import type { FieldInfo } from '../types';
 import { getTestsuites } from '../router';
-import { getTestSuiteInfo, getRunsPage, fetchTrends } from '../api';
-import { el, agnosticUrl } from '../utils';
-import { filterMetricFields } from '../components/metric-selector';
+import { getDashboard, fetchTrends } from '../api';
+import { el, agnosticUrl, traceColor } from '../utils';
 import type { SparklineTrace } from '../components/sparkline-card';
 import {
   createSparklineCard, createSparklineLoading, createSparklineError,
-  machineColor,
 } from '../components/sparkline-card';
+import { formatParamQuery, encodeParamQuery } from '../types';
 
-const MAX_MACHINES = 5;
+const MAX_CARDS_PER_SUITE = 10;
 
 type RangePreset = '100' | '500' | '1000';
 const RANGE_COMMITS: Record<RangePreset, number> = { '100': 100, '500': 500, '1000': 1000 };
@@ -28,45 +26,35 @@ function isValidRange(s: string): s is RangePreset {
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch trend data for one metric across multiple machines.
- * Returns sparkline traces with server-computed geomean values per commit.
+ * Fetch trend data for one dashboard card (metric + params).
+ * Returns a single sparkline trace with server-computed geomean values per commit.
  * Points are assigned sequential x-indices for even spacing on the chart.
  */
-async function fetchSuiteTrends(
+async function fetchCardTrends(
   suite: string,
   metric: string,
-  machines: string[],
+  params: Record<string, string>,
   lastN: number,
   signal: AbortSignal,
 ): Promise<SparklineTrace[]> {
-  const items = await fetchTrends(suite, { metric, machine: machines, lastN }, signal);
+  const items = await fetchTrends(suite, { metric, params, lastN }, signal);
 
-  // Group API response by machine
-  const byMachine = new Map<string, Array<{ ordinal: number; value: number; commit: string }>>();
-  for (const item of items) {
-    let points = byMachine.get(item.machine);
-    if (!points) { points = []; byMachine.set(item.machine, points); }
-    points.push({ ordinal: item.ordinal, value: item.value, commit: item.commit });
-  }
+  // Sort by ordinal and assign sequential x-indices
+  const sorted = [...items].sort((a, b) => a.ordinal - b.ordinal);
+  const points = sorted.map((item, idx) => ({
+    x: idx,
+    value: item.value,
+    commit: item.commit,
+  }));
 
-  // Build a global ordinal -> sequential index mapping for even spacing.
-  // All machines share the same mapping so traces align at the same commits.
-  const allOrdinals = [...new Set(items.map(i => i.ordinal))].sort((a, b) => a - b);
-  const ordinalToX = new Map(allOrdinals.map((ord, idx) => [ord, idx]));
+  if (points.length === 0) return [];
 
-  const traces: SparklineTrace[] = [];
-  for (const [machine, points] of byMachine) {
-    if (points.length === 0) continue;
-    const idx = machines.indexOf(machine);
-    traces.push({
-      machine,
-      color: machineColor(idx >= 0 ? idx : traces.length),
-      points: points
-        .sort((a, b) => a.ordinal - b.ordinal)
-        .map(p => ({ x: ordinalToX.get(p.ordinal)!, value: p.value, commit: p.commit })),
-    });
-  }
-  return traces;
+  const label = formatParamQuery(params) || '(all)';
+  return [{
+    label,
+    color: traceColor(0),
+    points,
+  }];
 }
 
 // ---------------------------------------------------------------------------
@@ -171,51 +159,33 @@ export const homePage: PageModule = {
 
     async function loadSuite(suite: string, grid: HTMLElement, sig: AbortSignal): Promise<void> {
       try {
-        // Fetch suite info and recent runs in parallel
-        const [suiteInfo, runsPage] = await Promise.all([
-          getTestSuiteInfo(suite, sig),
-          getRunsPage(suite, { sort: '-submitted_at', limit: 50 }, sig),
-        ]);
+        // Fetch dashboard cards for this suite
+        const cards = await getDashboard(suite, sig);
 
         if (sig.aborted) return;
 
-        const metrics = filterMetricFields(suiteInfo.schema.metrics);
-        if (metrics.length === 0) {
-          grid.append(el('p', { class: 'sparkline-loading' }, 'No metrics defined.'));
+        if (cards.length === 0) {
+          grid.append(el('p', { class: 'sparkline-loading' }, 'No dashboard cards configured.'));
           return;
         }
 
-        // Find top N most recently active machines
-        const seen = new Set<string>();
-        const topMachines: string[] = [];
-        for (const run of runsPage.items) {
-          if (!seen.has(run.machine)) {
-            seen.add(run.machine);
-            topMachines.push(run.machine);
-            if (topMachines.length >= MAX_MACHINES) break;
-          }
-        }
+        const limitedCards = cards.slice(0, MAX_CARDS_PER_SUITE);
 
-        if (topMachines.length === 0) {
-          grid.append(el('p', { class: 'sparkline-loading' }, 'No recent runs.'));
-          return;
-        }
-
-        // Create loading placeholders for each metric
-        const placeholders = new Map<string, HTMLElement>();
-        for (const metric of metrics) {
-          const placeholder = createSparklineLoading(
-            metric.display_name || metric.name,
-            metric.unit_abbrev || metric.unit || undefined,
-          );
-          placeholders.set(metric.name, placeholder);
+        // Create loading placeholders for each card
+        const placeholders = new Map<number, HTMLElement>();
+        for (let i = 0; i < limitedCards.length; i++) {
+          const card = limitedCards[i];
+          const title = `${card.metric} | ${formatParamQuery(card.params) || '(all)'}`;
+          const placeholder = createSparklineLoading(title);
+          placeholders.set(i, placeholder);
           grid.append(placeholder);
         }
 
-        // Fetch and render each metric's sparkline
+        // Fetch and render each card's sparkline
         const lastN = RANGE_COMMITS[activeRange];
-        for (const metric of metrics) {
-          loadMetricSparkline(suite, metric, topMachines, lastN, grid, placeholders, sig);
+        for (let i = 0; i < limitedCards.length; i++) {
+          const card = limitedCards[i];
+          loadCardSparkline(suite, card.metric, card.params, lastN, grid, placeholders, i, sig);
         }
       } catch (err) {
         if (sig.aborted) return;
@@ -223,51 +193,47 @@ export const homePage: PageModule = {
       }
     }
 
-    async function loadMetricSparkline(
+    async function loadCardSparkline(
       suite: string,
-      metric: FieldInfo,
-      machines: string[],
+      metric: string,
+      params: Record<string, string>,
       lastN: number,
       grid: HTMLElement,
-      placeholders: Map<string, HTMLElement>,
+      placeholders: Map<number, HTMLElement>,
+      cardIndex: number,
       sig: AbortSignal,
     ): Promise<void> {
-      const metricName = metric.name;
-      const displayName = metric.display_name || metric.name;
-      const unit = metric.unit_abbrev || metric.unit || undefined;
+      const title = `${metric} | ${formatParamQuery(params) || '(all)'}`;
 
       try {
-        const traces = await fetchSuiteTrends(suite, metricName, machines, lastN, sig);
+        const traces = await fetchCardTrends(suite, metric, params, lastN, sig);
         if (sig.aborted) return;
 
         const { element, destroy } = createSparklineCard({
-          title: displayName,
-          unit,
+          title,
           traces,
-          onClick: (machine?: string) => {
-            const params = new URLSearchParams();
-            params.set('suite', suite);
-            if (machine) {
-              params.append('machine', machine);
-            } else {
-              for (const m of machines) params.append('machine', m);
-            }
-            params.set('metric', metricName);
-            window.location.href = agnosticUrl(`/graph?${params.toString()}`);
+          onClick: () => {
+            const urlParams = new URLSearchParams();
+            urlParams.set('suite', suite);
+            urlParams.set('metric', metric);
+            // Encode params as a trace query
+            const encoded = encodeParamQuery(params);
+            if (encoded) urlParams.set('trace', encoded);
+            window.location.href = agnosticUrl(`/graph?${urlParams.toString()}`);
           },
         });
 
         destroyFns.push(destroy);
 
         // Replace loading placeholder with the rendered card
-        const placeholder = placeholders.get(metricName);
+        const placeholder = placeholders.get(cardIndex);
         if (placeholder && placeholder.parentElement === grid) {
           grid.replaceChild(element, placeholder);
         }
       } catch (err) {
         if (sig.aborted) return;
-        const errorCard = createSparklineError(displayName, unit);
-        const placeholder = placeholders.get(metricName);
+        const errorCard = createSparklineError(title);
+        const placeholder = placeholders.get(cardIndex);
         if (placeholder && placeholder.parentElement === grid) {
           grid.replaceChild(errorCard, placeholder);
         }

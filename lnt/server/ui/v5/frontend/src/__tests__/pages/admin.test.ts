@@ -53,7 +53,6 @@ const mockSuiteInfo: TestSuiteInfo = {
       { name: 'exec_time', type: 'real', display_name: 'Execution Time', unit: 's', unit_abbrev: 's', bigger_is_better: false },
     ],
     commit_fields: [{ name: 'rev', type: 'text' }],
-    machine_fields: [{ name: 'hostname', type: 'text' }],
   },
 };
 
@@ -169,8 +168,6 @@ describe('adminPage', () => {
       expect(container.textContent).toContain('Execution Time');
       expect(container.textContent).toContain('Commit Fields');
       expect(container.textContent).toContain('rev');
-      expect(container.textContent).toContain('Machine Fields');
-      expect(container.textContent).toContain('hostname');
     });
   });
 

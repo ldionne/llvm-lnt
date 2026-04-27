@@ -6,12 +6,12 @@ import type {
   ProfileFunctionDetail, RunInfo,
 } from '../types';
 import {
-  getRun, getRuns, getCommits, getMachineRuns, getProfilesForRun,
+  getRun, getRuns, getCommits, getProfilesForRun,
   getProfileMetadata, getProfileFunctions, getProfileFunctionDetail,
 } from '../api';
 import { getTestsuites } from '../router';
 import { el, matchesFilter, updateFilterValidation } from '../utils';
-import { renderMachineCombobox } from '../components/machine-combobox';
+import { createSearchChips, chipsToParams, paramsToChips, type SearchChipsHandle } from '../components/search-chips';
 import { createCommitPicker } from '../combobox';
 import { renderProfileStats } from '../components/profile-stats';
 import { renderProfileViewer, type DisplayMode } from '../components/profile-viewer';
@@ -33,19 +33,19 @@ let selectedCounter = '';
 let displayMode: DisplayMode = 'relative';
 
 // Cleanup handles
-let machineComboA: ReturnType<typeof renderMachineCombobox> | null = null;
-let machineComboB: ReturnType<typeof renderMachineCombobox> | null = null;
+let searchChipsHandleA: SearchChipsHandle | null = null;
+let searchChipsHandleB: SearchChipsHandle | null = null;
 let commitPickerA: ReturnType<typeof createCommitPicker> | null = null;
 let commitPickerB: ReturnType<typeof createCommitPicker> | null = null;
 let statsHandle: { destroy: () => void } | null = null;
 let viewerHandleA: { destroy: () => void; isShowAll: () => boolean } | null = null;
 let viewerHandleB: { destroy: () => void; isShowAll: () => boolean } | null = null;
-let machineCommitsAbortA: AbortController | null = null;
-let machineCommitsAbortB: AbortController | null = null;
+let paramsCommitsAbortA: AbortController | null = null;
+let paramsCommitsAbortB: AbortController | null = null;
 
 interface SideState {
   suite: string;
-  machine: string;
+  params: Record<string, string>;
   commit: string;
   runUuid: string;
   testName: string;
@@ -54,17 +54,17 @@ interface SideState {
   functions: ProfileFunctionInfo[];
   selectedFunction: string;
   functionDetail: ProfileFunctionDetail | null;
-  machineCommits: Set<string> | null;  // null = not loaded yet
-  machineCommitsLoading: boolean;
+  paramsCommits: Set<string> | null;  // null = not loaded yet
+  paramsCommitsLoading: boolean;
   profiles: ProfileListItem[];  // cached profiles for the selected run
-  runs: RunInfo[];  // cached runs for machine+commit
+  runs: RunInfo[];  // cached runs for params+commit
 }
 
 function initialSideState(): SideState {
   return {
-    suite: '', machine: '', commit: '', runUuid: '', testName: '', profileUuid: '',
+    suite: '', params: {}, commit: '', runUuid: '', testName: '', profileUuid: '',
     metadata: null, functions: [], selectedFunction: '',
-    functionDetail: null, machineCommits: null, machineCommitsLoading: false,
+    functionDetail: null, paramsCommits: null, paramsCommitsLoading: false,
     profiles: [], runs: [],
   };
 }
@@ -178,48 +178,41 @@ async function loadCommitsForSuite(suite: string): Promise<void> {
   }
 }
 
-async function loadMachineCommits(side: 'a' | 'b', suite: string, machine: string): Promise<void> {
+async function loadParamsCommits(side: 'a' | 'b', suite: string, params: Record<string, string>): Promise<void> {
   const state = side === 'a' ? sideA : sideB;
-  state.machineCommitsLoading = true;
+  state.paramsCommitsLoading = true;
 
   // Abort previous for this side
-  const prevCtrl = side === 'a' ? machineCommitsAbortA : machineCommitsAbortB;
+  const prevCtrl = side === 'a' ? paramsCommitsAbortA : paramsCommitsAbortB;
   if (prevCtrl) prevCtrl.abort();
   const ctrl = new AbortController();
-  if (side === 'a') machineCommitsAbortA = ctrl;
-  else machineCommitsAbortB = ctrl;
+  if (side === 'a') paramsCommitsAbortA = ctrl;
+  else paramsCommitsAbortB = ctrl;
 
   try {
-    // Fetch runs for this machine, then check each for profiles.
-    // TODO(profiles): This is N+1 requests. Replace with a server-side filter
-    // once the API supports it (e.g. has_profiles flag on runs).
-    const page = await getMachineRuns(suite, machine, { limit: 500 }, ctrl.signal);
-    const profileChecks = page.items.map(async (run) => {
-      const profiles = await getProfilesForRun(suite, run.uuid, ctrl.signal);
-      return { commit: run.commit, hasProfiles: profiles.length > 0 };
-    });
-    const results = await Promise.all(profileChecks);
-    const commits = new Set<string>();
-    for (const r of results) {
-      if (r.hasProfiles) commits.add(r.commit);
+    // Fetch commits with these params, then check each run for profiles.
+    const commits = await getCommits(suite, { params, signal: ctrl.signal });
+    const commitSet = new Set<string>();
+    for (const c of commits) {
+      commitSet.add(c.commit);
     }
-    state.machineCommits = commits;
-    state.machineCommitsLoading = false;
+    state.paramsCommits = commitSet;
+    state.paramsCommitsLoading = false;
   } catch (e: unknown) {
     if (isAbort(e)) return;
-    state.machineCommits = null;
-    state.machineCommitsLoading = false;
+    state.paramsCommits = null;
+    state.paramsCommitsLoading = false;
   }
 }
 
 async function loadRuns(side: 'a' | 'b'): Promise<void> {
   const state = side === 'a' ? sideA : sideB;
-  if (!state.suite || !state.machine || !state.commit) return;
+  if (!state.suite || Object.keys(state.params).length === 0 || !state.commit) return;
 
   try {
-    const runs = await getRuns(state.suite, { machine: state.machine, commit: state.commit }, controller?.signal);
+    const runs = await getRuns(state.suite, { params: state.params, commit: state.commit }, controller?.signal);
     // Filter to runs that have profiles (N+1, see TODO in v5-todo.md).
-    const checks = runs.map(async (run) => {
+    const checks = runs.map(async (run: RunInfo) => {
       const profiles = await getProfilesForRun(state.suite, run.uuid, controller?.signal);
       return { run, hasProfiles: profiles.length > 0 };
     });
@@ -317,16 +310,16 @@ async function restoreSide(side: 'a' | 'b', runUuid: string, testName: string): 
   const state = side === 'a' ? sideA : sideB;
 
   try {
-    // 1. Fetch run details to get machine + commit
+    // 1. Fetch run details to get params + commit
     const runDetail = await getRun(state.suite, runUuid, controller?.signal);
-    state.machine = runDetail.machine;
+    state.params = runDetail.run_parameters || {};
     state.commit = runDetail.commit;
 
-    // 2. Load machine-commit set
-    await loadMachineCommits(side, state.suite, state.machine);
+    // 2. Load params-commit set
+    await loadParamsCommits(side, state.suite, state.params);
 
-    // 3. Fetch runs for machine+commit
-    const runs = await getRuns(state.suite, { machine: state.machine, commit: state.commit }, controller?.signal);
+    // 3. Fetch runs for params+commit
+    const runs = await getRuns(state.suite, { params: state.params, commit: state.commit }, controller?.signal);
     state.runs = runs;
 
     // 4. Set run
@@ -393,8 +386,8 @@ function renderSidePicker(side: 'a' | 'b'): void {
   suiteSelect.addEventListener('change', () => {
     const newSuite = suiteSelect.value;
     state.suite = newSuite;
-    resetStateFrom(state, 'machine');
-    clearDownstream(side, 'machine');
+    resetStateFrom(state, 'params');
+    clearDownstream(side, 'params');
     clearProfileDisplay(side);
     syncUrl();
     if (newSuite) {
@@ -411,19 +404,20 @@ function renderSidePicker(side: 'a' | 'b'): void {
     return;
   }
 
-  // Machine combobox
-  const machineRow = el('div', { class: 'profile-cascade-row control-group' });
-  machineRow.append(el('label', {}, 'Machine'));
-  const machineContainer = el('div');
-  const combo = renderMachineCombobox(machineContainer, {
+  // Parameter search chips
+  const paramsRow = el('div', { class: 'profile-cascade-row control-group' });
+  paramsRow.append(el('label', {}, 'Parameters'));
+  const paramsContainer = el('div');
+  const searchChips = createSearchChips({
     testsuite: state.suite,
-    initialValue: state.machine,
-    onSelect(name: string) {
+    initialChips: paramsToChips(state.params),
+    placeholder: 'Add parameter filter...',
+    onChange: (chips) => {
       resetStateFrom(state, 'commit');
-      state.machine = name;
-      state.machineCommitsLoading = true;
-      clearDownstream(side, 'machine');
-      loadMachineCommits(side, state.suite, name).then(() => {
+      state.params = chipsToParams(chips);
+      state.paramsCommitsLoading = true;
+      clearDownstream(side, 'params');
+      loadParamsCommits(side, state.suite, state.params).then(() => {
         const picker = side === 'a' ? commitPickerA : commitPickerB;
         if (picker) {
           picker.input.disabled = false;
@@ -432,23 +426,19 @@ function renderSidePicker(side: 'a' | 'b'): void {
       });
       syncUrl();
     },
-    onClear() {
-      resetStateFrom(state, 'machine');
-      clearDownstream(side, 'machine');
-      syncUrl();
-    },
   });
 
   if (side === 'a') {
-    machineComboA?.destroy();
-    machineComboA = combo;
+    searchChipsHandleA?.destroy();
+    searchChipsHandleA = searchChips;
   } else {
-    machineComboB?.destroy();
-    machineComboB = combo;
+    searchChipsHandleB?.destroy();
+    searchChipsHandleB = searchChips;
   }
 
-  machineRow.append(machineContainer);
-  container.append(machineRow);
+  paramsContainer.append(searchChips.element);
+  paramsRow.append(paramsContainer);
+  container.append(paramsRow);
 
   // Commit picker
   const commitRow = el('div', { class: 'profile-cascade-row control-group' });
@@ -459,15 +449,15 @@ function renderSidePicker(side: 'a' | 'b'): void {
     id: cpId,
     getCommitData: () => {
       let values = commitCache.get(state.suite) ?? [];
-      if (state.machineCommits instanceof Set) {
-        values = values.filter(v => state.machineCommits!.has(v));
+      if (state.paramsCommits instanceof Set) {
+        values = values.filter(v => state.paramsCommits!.has(v));
       }
       return { values };
     },
     initialValue: state.commit,
-    placeholder: state.machine
-      ? (state.machineCommitsLoading ? 'Loading commits...' : 'Type to search commits...')
-      : 'Select a machine first',
+    placeholder: Object.keys(state.params).length > 0
+      ? (state.paramsCommitsLoading ? 'Loading commits...' : 'Type to search commits...')
+      : 'Add parameters first',
     onSelect(value: string) {
       resetStateFrom(state, 'run');
       state.commit = value;
@@ -477,7 +467,7 @@ function renderSidePicker(side: 'a' | 'b'): void {
     },
   });
 
-  if (!state.machine) {
+  if (Object.keys(state.params).length === 0) {
     picker.input.disabled = true;
   }
 
@@ -855,10 +845,10 @@ function rerenderViewers(): void {
 // ---------------------------------------------------------------------------
 
 /** Reset all state downstream of (and including) the given level. */
-function resetStateFrom(state: SideState, level: 'machine' | 'commit' | 'run' | 'test'): void {
-  if (level === 'machine') { state.machine = ''; state.machineCommits = null; state.machineCommitsLoading = false; }
-  if (level === 'machine' || level === 'commit') { state.commit = ''; state.runs = []; }
-  if (level === 'machine' || level === 'commit' || level === 'run') { state.runUuid = ''; state.profiles = []; }
+function resetStateFrom(state: SideState, level: 'params' | 'commit' | 'run' | 'test'): void {
+  if (level === 'params') { state.params = {}; state.paramsCommits = null; state.paramsCommitsLoading = false; }
+  if (level === 'params' || level === 'commit') { state.commit = ''; state.runs = []; }
+  if (level === 'params' || level === 'commit' || level === 'run') { state.runUuid = ''; state.profiles = []; }
   state.testName = '';
   state.profileUuid = '';
   state.metadata = null;
@@ -867,12 +857,12 @@ function resetStateFrom(state: SideState, level: 'machine' | 'commit' | 'run' | 
   state.functionDetail = null;
 }
 
-function clearDownstream(side: 'a' | 'b', from: 'machine' | 'commit' | 'run'): void {
-  if (from === 'machine' || from === 'commit') {
+function clearDownstream(side: 'a' | 'b', from: 'params' | 'commit' | 'run'): void {
+  if (from === 'params' || from === 'commit') {
     const runContainer = getRunContainer(side);
     if (runContainer) renderDisabledSelect(runContainer, 'Select a commit first');
   }
-  if (from === 'machine' || from === 'commit' || from === 'run') {
+  if (from === 'params' || from === 'commit' || from === 'run') {
     const testContainer = getTestContainer(side);
     if (testContainer) renderDisabledSelect(testContainer, 'Select a run first');
   }
@@ -911,15 +901,15 @@ function isAbort(e: unknown): boolean {
 
 function cleanup(): void {
   if (controller) { controller.abort(); controller = null; }
-  machineComboA?.destroy(); machineComboA = null;
-  machineComboB?.destroy(); machineComboB = null;
+  searchChipsHandleA?.destroy(); searchChipsHandleA = null;
+  searchChipsHandleB?.destroy(); searchChipsHandleB = null;
   commitPickerA?.destroy(); commitPickerA = null;
   commitPickerB?.destroy(); commitPickerB = null;
   statsHandle?.destroy(); statsHandle = null;
   viewerHandleA?.destroy(); viewerHandleA = null;
   viewerHandleB?.destroy(); viewerHandleB = null;
-  if (machineCommitsAbortA) { machineCommitsAbortA.abort(); machineCommitsAbortA = null; }
-  if (machineCommitsAbortB) { machineCommitsAbortB.abort(); machineCommitsAbortB = null; }
+  if (paramsCommitsAbortA) { paramsCommitsAbortA.abort(); paramsCommitsAbortA = null; }
+  if (paramsCommitsAbortB) { paramsCommitsAbortB.abort(); paramsCommitsAbortB = null; }
   sideA = initialSideState();
   sideB = initialSideState();
   cascadeRefs.clear();

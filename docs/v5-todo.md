@@ -16,41 +16,21 @@
   `submitted_before`/`submitted_after`. Audit all time-filter parameters across
   the API for consistency (including `before_time`/`after_time` on `/trends`).
 
-### Machines
+### Run Parameters
 
-- [ ] Document supported sort orders on `/machines/{name}/runs`.
-- [ ] Understand whether the machines list endpoint should use cursor pagination
-  instead of offset pagination.
-- [ ] Understand whether both `GET /machines/{name}/runs` and
-  `GET /runs?machine=x` are needed, or if the `/runs` endpoint suffices.
-- [ ] Add ordinal-based sorting to the machines endpoint. The Graph page
-  currently passes an invalid sort parameter that is silently ignored; it should
-  error instead.
-
-### Commits & Orders
-
-- [ ] Allow including the ordinal (and commit_fields) in run submissions, and
-  make it a hard error if any submitted commit_field (or ordinal) clashes with
-  existing values on the commit. Currently commit_fields use first-write-wins
-  silently, and ordinals can only be set via PATCH.
-
-### Tests
-
-- [ ] Accept multiple `machine=` values on `GET /tests` (OR semantics). The
+- [ ] Accept multiple `param.X=` values on `GET /tests` (OR semantics). The
   Regression Detail "Add Indicators" panel calls `getTests()` once per selected
-  machine then unions results client-side (`regression-detail.ts:754`).
-  Multi-value machine support would collapse these into a single request.
+  run then unions results client-side (`regression-detail.ts:754`).
+  Multi-value parameter support would collapse these into a single request.
 
 ### General
 
-- [ ] Add count endpoints (or a count mode) for commits, runs, machines, etc.
-- [ ] Enforce that all schema-defined fields (metrics, commit_fields, and
-  machine_fields) have an explicit type. Machine fields currently have no `type`
-  attribute and are always `String(256)`. Once typed, validate submitted values
+- [ ] Add count endpoints (or a count mode) for commits, runs, etc.
+- [ ] Enforce that all schema-defined fields (metrics and commit_fields)
+  have an explicit type. Once typed, validate submitted values
   against declared types at all CRUD endpoints (run submission, PATCH commit,
-  PATCH machine, etc.) — e.g. reject a string for an `integer` commit_field.
-- [ ] Audit sort orders across all API endpoints for consistency. For example,
-  should `/machines/{name}/runs` allow sorting on commit order?
+  etc.) — e.g. reject a string for an `integer` commit_field.
+- [ ] Audit sort orders across all API endpoints for consistency.
 - [ ] Understand whether the regression detection tool would benefit from a
   richer time-series endpoint.
 
@@ -98,20 +78,17 @@
 
 ## UI — General
 
-- [ ] Fix: Runs tab search on Test Suites page uses exact machine name match
-  (`?machine=`), so partial input returns empty results. Consider switching to
-  a machine combobox.
-- [ ] Machine detail page: allow searching the run history by run UUID or by
-  commit.
+- [ ] Fix: Runs tab search on Test Suites page uses exact parameter match
+  (`?param.X=Y`), so partial input returns empty results. Consider switching to
+  a search-chips component.
 - [ ] Consider infinite scrolling for test suites sub-tab lists with filters
   applying to all results, not just the current page.
 
 ## Cleanup & Tech Debt
 
 - [ ] Undo changes made to the v4 layer (e.g. new migrations).
-- [ ] Reorganize `combobox.ts` and `machine-combobox.ts` — remnants of the
-  Compare page being standalone. Either unify into a single combobox component
-  or rename for clarity.
+- [ ] Reorganize `combobox.ts` — remnants of the Compare page being
+  standalone. Consider renaming for clarity.
 
 ## Use Cases
 
@@ -151,9 +128,9 @@
   Slowly-changing resources (machines, commits) should have short-lived caching
   (60–300s).
 
-- [ ] **Fix N+1 `run.commit_obj` in MachineRuns endpoint** (impact: eliminates
-  up to 500 lazy-load queries per page). `GET /machines/{name}/runs`
-  (`machines.py:275`) accesses `run.commit_obj.commit` in serialization without
+- [ ] **Fix N+1 `run.commit_obj` in Runs endpoint** (impact: eliminates
+  up to 500 lazy-load queries per page). `GET /runs`
+  accesses `run.commit_obj.commit` in serialization without
   eager loading. Each run in the page triggers a separate SELECT. Fix: add
   `.options(joinedload(ts.Run.commit_obj))` to the query.
 
@@ -161,7 +138,7 @@
   (impact: avoids loading thousands of indicator objects). The regression list
   endpoint (`regressions.py:199`) uses `subqueryload(ts.Regression.indicators)`
   to load ALL indicator rows for every regression on the page, then iterates them
-  in Python just to compute `machine_count` and `test_count`. A single SQL
+  `machine_count` and `test_count`. A single SQL
   aggregation query would be dramatically more efficient.
 
 - [ ] **Cache schema version check with TTL** (impact: eliminates 1 DB
@@ -174,7 +151,7 @@
   avoids O(existing_count) Python-side dedup). `add_regression_indicators_batch`
   (`__init__.py:1162`) loads ALL existing indicators for a regression into Python
   to build a dedup set before inserting new ones. PostgreSQL's
-  `INSERT ... ON CONFLICT (regression_id, machine_id, test_id, metric) DO NOTHING`
+  `INSERT ... ON CONFLICT (regression_id, run_id, test_id, metric) DO NOTHING`
   eliminates this entirely.
 
 ### P2 — Medium
@@ -186,18 +163,18 @@
   query on most requests. Caveat: revoked keys remain valid for up to TTL
   seconds.
 
-- [ ] **Replace ORM `session.delete()` with bulk SQL DELETE for machines/runs**
-  (impact: prevents potential OOM on large cascades). `delete_machine`
-  (`__init__.py:628`) uses `session.delete(machine)` which can cascade through
-  10K runs × 7,500 samples = 75M rows. While `passive_deletes=True` should
+- [ ] **Replace ORM `session.delete()` with bulk SQL DELETE for runs**
+  (impact: prevents potential OOM on large cascades). Run deletes
+  use `session.delete(run)` which can cascade through
+  large sample sets. While `passive_deletes=True` should
   prevent loading, it is fragile. A direct
-  `session.query(ts.Machine).filter(...).delete()` or raw SQL DELETE is safer
+  `session.query(ts.Run).filter(...).delete()` or raw SQL DELETE is safer
   and faster.
 
 - [ ] **Use EXISTS subquery instead of JOIN+DISTINCT for regression indicator
   filters** (impact: more efficient semi-join for large indicator tables). The
   regression list endpoint (`regressions.py:239`) uses JOIN + DISTINCT when
-  filtering by machine/test/metric. An EXISTS subquery avoids producing large
+  filtering by test/metric. An EXISTS subquery avoids producing large
   intermediate result sets and is better optimized by PostgreSQL.
 
 - [ ] **Use `schema.dump(many=True)` for batch serialization** (impact: ~5–10x
@@ -249,13 +226,13 @@
   `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers` are needed
   on non-preflight responses. Saves ~200 bytes of header per response.
 
-- [ ] **Accept multiple `machine=` values on `GET /commits`**: The Graph page
-  fetches commit scaffolds per-machine in parallel then unions client-side
-  (`graph-data-cache.ts:55`). Multi-value machine support would collapse N
+- [ ] **Accept multiple `param.X=` values on `GET /commits`**: The Graph page
+  fetches commit scaffolds per-trace in parallel then unions client-side
+  (`graph-data-cache.ts:55`). Multi-value parameter support would collapse N
   paginated fetches into one.
 
-- [ ] **Use EXISTS instead of JOIN+DISTINCT for machine/metric filters on
-  `GET /tests`**: The tests endpoint (`tests.py:63`) joins Test→Sample→Run
+- [ ] **Use EXISTS instead of JOIN+DISTINCT for parameter/metric filters on
+  `GET /tests`**: The tests endpoint (`tests.py:63`) joins Test->Sample->Run
   and applies DISTINCT. An EXISTS subquery (matching the pattern in
   `commits.py:163`) would avoid the large intermediate result set.
 
@@ -265,8 +242,8 @@
   Deferred to a future phase.
 - [ ] **Replace N+1 profile-existence check in commit picker**: The Profiles
   page commit dropdown calls `GET /runs/{uuid}/profiles` for every run on the
-  selected machine to filter commits without profiles. Replace with a
+  selected trace to filter commits without profiles. Replace with a
   server-side mechanism (e.g. `has_profiles` flag on run list responses or a
   filtered commits endpoint). The Profiles page also fetches all commits then
-  filters client-side by machine — it should use the existing `?machine=`
-  filter on `GET /commits` instead.
+  filters client-side by run parameters — it should use the existing parameter
+  filters on `GET /commits` instead.

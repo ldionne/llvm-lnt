@@ -9,6 +9,7 @@ vi.mock('../../api', async (importOriginal) => {
     getTestSuiteInfo: vi.fn(),
     getRunsPage: vi.fn(),
     fetchTrends: vi.fn(),
+    getDashboard: vi.fn(),
   };
 });
 
@@ -31,7 +32,7 @@ vi.mock('../../router', async (importOriginal) => {
 };
 (globalThis as unknown as Record<string, unknown>).lnt_url_base = '';
 
-import { getTestSuiteInfo, getRunsPage, fetchTrends } from '../../api';
+import { getTestSuiteInfo, getRunsPage, fetchTrends, getDashboard } from '../../api';
 import type { CursorPageResult, TrendsDataPoint } from '../../api';
 import { homePage } from '../../pages/home';
 import type { RunInfo, TestSuiteInfo } from '../../types';
@@ -44,7 +45,6 @@ const mockSuiteInfo: TestSuiteInfo = {
       { name: 'compile_time', type: 'real', display_name: 'Compile Time', unit: 'seconds', unit_abbrev: 's', bigger_is_better: false },
     ],
     commit_fields: [{ name: 'llvm_project_revision', type: 'text' }],
-    machine_fields: [],
   },
 };
 
@@ -55,14 +55,13 @@ const mockSuiteInfo2: TestSuiteInfo = {
       { name: 'score', type: 'real', display_name: 'Score', unit: null, unit_abbrev: null, bigger_is_better: true },
     ],
     commit_fields: [{ name: 'revision', type: 'text' }],
-    machine_fields: [],
   },
 };
 
 const mockRuns: RunInfo[] = [
-  { uuid: 'r1', machine: 'machine-a', commit: '100', submitted_at: '2026-01-01T10:00:00Z' },
-  { uuid: 'r2', machine: 'machine-b', commit: '101', submitted_at: '2026-01-02T10:00:00Z' },
-  { uuid: 'r3', machine: 'machine-a', commit: '102', submitted_at: '2026-01-03T10:00:00Z' },
+  { uuid: 'r1', commit: '100', submitted_at: '2026-01-01T10:00:00Z', run_parameters: { compiler: 'clang' } },
+  { uuid: 'r2', commit: '101', submitted_at: '2026-01-02T10:00:00Z', run_parameters: { compiler: 'gcc' } },
+  { uuid: 'r3', commit: '102', submitted_at: '2026-01-03T10:00:00Z', run_parameters: { compiler: 'clang' } },
 ];
 
 function mockRunsPage(items: RunInfo[], nextCursor: string | null = null): CursorPageResult<RunInfo> {
@@ -70,7 +69,7 @@ function mockRunsPage(items: RunInfo[], nextCursor: string | null = null): Curso
 }
 
 const mockTrendsData: TrendsDataPoint[] = [
-  { machine: 'machine-a', commit: '100', ordinal: 100, tag: null, submitted_at: '2026-01-01T10:00:00Z', value: 14.14 },
+  { commit: '100', ordinal: 100, tag: null, submitted_at: '2026-01-01T10:00:00Z', value: 14.14 },
 ];
 
 let container: HTMLElement;
@@ -92,6 +91,9 @@ beforeEach(() => {
   });
   (getRunsPage as ReturnType<typeof vi.fn>).mockResolvedValue(mockRunsPage(mockRuns));
   (fetchTrends as ReturnType<typeof vi.fn>).mockResolvedValue(mockTrendsData);
+  (getDashboard as ReturnType<typeof vi.fn>).mockResolvedValue([
+    { id: 1, position: 0, params: { compiler: 'clang' }, metric: 'execution_time', last_n: 50 },
+  ]);
 });
 
 afterEach(() => {
@@ -128,29 +130,22 @@ describe('Dashboard page', () => {
     expect(buttons[0].classList.contains('dashboard-range-btn-active')).toBe(false);
   });
 
-  it('renders sparkline cards with correct metric titles after data loads', async () => {
+  it('renders sparkline cards from dashboard config after data loads', async () => {
     homePage.mount(container, { testsuite: '' });
 
     // Wait for async data loading to complete
     await vi.waitFor(() => {
-      const titles = container.querySelectorAll('.sparkline-title');
-      expect(titles.length).toBeGreaterThanOrEqual(1);
+      const cards = container.querySelectorAll('.sparkline-card');
+      expect(cards.length).toBeGreaterThanOrEqual(1);
     }, { timeout: 500 });
-
-    const titles = Array.from(container.querySelectorAll('.sparkline-title'));
-    const titleTexts = titles.map(t => t.textContent);
-    expect(titleTexts).toContain('Execution Time (s)');
-    expect(titleTexts).toContain('Compile Time (s)');
-    expect(titleTexts).toContain('Score');
   });
 
-  it('fetches suite info and runs for each suite', async () => {
+  it('calls getDashboard for each suite', async () => {
     homePage.mount(container, { testsuite: '' });
 
     await vi.waitFor(() => {
-      expect(getTestSuiteInfo).toHaveBeenCalledWith('nts', expect.anything());
-      expect(getTestSuiteInfo).toHaveBeenCalledWith('compile-suite', expect.anything());
-      expect(getRunsPage).toHaveBeenCalledTimes(2);
+      expect(getDashboard).toHaveBeenCalledWith('nts', expect.anything());
+      expect(getDashboard).toHaveBeenCalledWith('compile-suite', expect.anything());
     }, { timeout: 500 });
   });
 

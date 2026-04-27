@@ -34,7 +34,7 @@ export function renderDeleteConfirm(
 ): void {
   const deleteBtn = el('button', { class: 'admin-btn admin-btn-danger' }, options.label);
 
-  const confirmDiv = el('div', { class: 'delete-machine-confirm' });
+  const confirmDiv = el('div', { class: 'delete-confirm' });
   confirmDiv.style.display = 'none';
 
   const errorDiv = el('div', {});

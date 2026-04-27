@@ -4,25 +4,25 @@
 
 import type { AggFn, QueryDataPoint, RegressionListItem } from '../../types';
 import type { TimeSeriesTrace, PinnedBaseline, ChartOverlays } from './time-series-chart';
-import { getAggFn, machineColor, TRACE_SEP } from '../../utils';
+import { getAggFn, traceColor, TRACE_SEP } from '../../utils';
 
 // ---- Symbol constants ----
 
-/** Plotly marker symbols for machine differentiation. */
-export const MACHINE_SYMBOLS = [
+/** Plotly marker symbols for trace differentiation. */
+export const TRACE_SYMBOLS = [
   'circle', 'triangle-up', 'square', 'diamond', 'x',
   'cross', 'star', 'pentagon', 'hexagon', 'hexagram',
 ];
 
-/** Unicode characters matching MACHINE_SYMBOLS for display in chips and legend. */
+/** Unicode characters matching TRACE_SYMBOLS for display in chips and legend. */
 export const SYMBOL_CHARS = ['●', '▲', '■', '◆', '✕', '+', '★', '⬠', '⬡', '✡'];
 
-export function assignSymbol(machineIndex: number): string {
-  return MACHINE_SYMBOLS[machineIndex % MACHINE_SYMBOLS.length];
+export function assignSymbol(traceIndex: number): string {
+  return TRACE_SYMBOLS[traceIndex % TRACE_SYMBOLS.length];
 }
 
-export function assignSymbolChar(machineIndex: number): string {
-  return SYMBOL_CHARS[machineIndex % SYMBOL_CHARS.length];
+export function assignSymbolChar(traceIndex: number): string {
+  return SYMBOL_CHARS[traceIndex % SYMBOL_CHARS.length];
 }
 
 // ---- Color assignment ----
@@ -33,7 +33,7 @@ export function assignSymbolChar(machineIndex: number): string {
 export function buildColorMap(allDiscoveredTests: string[]): Map<string, string> {
   const map = new Map<string, string>();
   for (let i = 0; i < allDiscoveredTests.length; i++) {
-    map.set(allDiscoveredTests[i], machineColor(i));
+    map.set(allDiscoveredTests[i], traceColor(i));
   }
   return map;
 }
@@ -44,7 +44,7 @@ export function buildColorMap(allDiscoveredTests: string[]): Map<string, string>
  * Group data points by test and commit, apply two-level aggregation
  * (sample within run, then run across runs), and return one trace per test.
  *
- * The `machine` field on each trace is set to '' — the caller assigns it.
+ * The `trace` field on each trace is set to '' -- the caller assigns it.
  */
 export function buildTraces(
   points: QueryDataPoint[],
@@ -90,7 +90,7 @@ export function buildTraces(
       });
     }
 
-    traces.push({ testName, machine: '', points: tracePoints });
+    traces.push({ testName, trace: '', points: tracePoints });
   }
 
   traces.sort((a, b) => a.testName.localeCompare(b.testName));
@@ -101,19 +101,19 @@ export function buildTraces(
 
 export interface BuildChartDataOpts {
   selectedTests: Set<string>;
-  machines: string[];
+  traces: string[];
   metric: string;
   runAgg: AggFn;
   sampleAgg: AggFn;
   /** Sync reader for cached data points. */
-  readCachedTestData: (suite: string, machine: string, metric: string, test: string) => QueryDataPoint[];
+  readCachedTestData: (suite: string, trace: string, metric: string, test: string) => QueryDataPoint[];
   suite: string;
   /** Pre-built color map (from buildColorMap). */
   colorMap: Map<string, string>;
 }
 
 /**
- * Build all traces across machines with color and symbol assignment.
+ * Build all traces across trace queries with color and symbol assignment.
  * Returns traces plus an indexed map for O(1) raw-values hover lookup.
  */
 export function buildChartData(opts: BuildChartDataOpts): {
@@ -126,28 +126,28 @@ export function buildChartData(opts: BuildChartDataOpts): {
 
   const selectedSorted = [...opts.selectedTests].sort((a, b) => a.localeCompare(b));
 
-  for (let mi = 0; mi < opts.machines.length; mi++) {
-    const m = opts.machines[mi];
-    const symbol = assignSymbol(mi);
+  for (let ti = 0; ti < opts.traces.length; ti++) {
+    const t = opts.traces[ti];
+    const symbol = assignSymbol(ti);
 
     for (const testName of selectedSorted) {
-      const points = opts.readCachedTestData(opts.suite, m, opts.metric, testName);
+      const points = opts.readCachedTestData(opts.suite, t, opts.metric, testName);
       if (points.length === 0) continue;
 
       // Build raw values index for hover scatter
       for (const pt of points) {
-        const key = `${pt.test}|${m}|${pt.commit}`;
+        const key = `${pt.test}|${t}|${pt.commit}`;
         let arr = rawValuesIndex.get(key);
         if (!arr) { arr = []; rawValuesIndex.set(key, arr); }
         arr.push(pt.value);
       }
 
-      const machineTraces = buildTraces(points, opts.runAgg, opts.sampleAgg);
-      for (const t of machineTraces) {
+      const traceData = buildTraces(points, opts.runAgg, opts.sampleAgg);
+      for (const td of traceData) {
         allTraces.push({
-          ...t,
-          machine: m,
-          color: colorMap.get(t.testName),
+          ...td,
+          trace: t,
+          color: colorMap.get(td.testName),
           markerSymbol: symbol,
         });
       }
@@ -155,7 +155,7 @@ export function buildChartData(opts: BuildChartDataOpts): {
   }
 
   allTraces.sort((a, b) =>
-    `${a.testName}${TRACE_SEP}${a.machine}`.localeCompare(`${b.testName}${TRACE_SEP}${b.machine}`));
+    `${a.testName}${TRACE_SEP}${a.trace}`.localeCompare(`${b.testName}${TRACE_SEP}${b.trace}`));
 
   return { traces: allTraces, rawValuesIndex };
 }
@@ -166,9 +166,9 @@ export function buildChartData(opts: BuildChartDataOpts): {
  */
 export function buildRawValuesCallback(
   rawValuesIndex: Map<string, number[]>,
-): (testName: string, machine: string, commit: string) => number[] {
-  return (testName, machine, commit) => {
-    return rawValuesIndex.get(`${testName}|${machine}|${commit}`) ?? [];
+): (testName: string, trace: string, commit: string) => number[] {
+  return (testName, trace, commit) => {
+    return rawValuesIndex.get(`${testName}|${trace}|${commit}`) ?? [];
   };
 }
 
@@ -178,14 +178,14 @@ export function buildRawValuesCallback(
  * Build baseline reference lines from cached data.
  */
 export function buildBaselinesFromData(
-  baselines: Array<{ suite: string; machine: string; commit: string }>,
-  getPoints: (suite: string, machine: string, commit: string, metric: string) => QueryDataPoint[],
+  baselines: Array<{ suite: string; trace: string; commit: string }>,
+  getPoints: (suite: string, trace: string, commit: string, metric: string) => QueryDataPoint[],
   metric: string,
   aggFn: (values: number[]) => number,
   displayMap?: Map<string, string>,
 ): PinnedBaseline[] {
   return baselines.map((bl) => {
-    const points = getPoints(bl.suite, bl.machine, bl.commit, metric);
+    const points = getPoints(bl.suite, bl.trace, bl.commit, metric);
 
     const rawPerTest = new Map<string, number[]>();
     for (const pt of points) {
@@ -200,7 +200,7 @@ export function buildBaselinesFromData(
     }
 
     const commitDisplay = displayMap?.get(bl.commit) ?? bl.commit;
-    const label = `${bl.suite}/${bl.machine}/${commitDisplay}`;
+    const label = `${bl.suite}/${bl.trace}/${commitDisplay}`;
 
     return { label, values };
   });

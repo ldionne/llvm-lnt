@@ -41,7 +41,7 @@ def v5_global():
 def v5_app(testsuite_name, subpath=None):
     """Catch-all route for the v5 SPA.
 
-    All client-side routes (dashboard, machines, graph, compare, etc.)
+    All client-side routes (dashboard, graph, compare, etc.)
     hit this single endpoint, which serves the SPA shell. The TypeScript
     router handles the rest.
     """

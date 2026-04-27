@@ -6,7 +6,6 @@ import type { QueryDataPoint } from '../../../types';
 function makePoint(test: string, commitValue: string, value: number, machine = 'm1', metric = 'exec_time'): QueryDataPoint {
   return {
     test,
-    machine,
     metric,
     value,
     commit: commitValue,
@@ -55,7 +54,7 @@ describe('GraphDataCache', () => {
 
       const [url, params] = api.fetchOneCursorPage.mock.calls[0];
       expect(url).toContain('/commits');
-      expect(params).toMatchObject({ machine: 'm1', sort: 'ordinal' });
+      expect(params).toMatchObject({ sort: 'ordinal' });
 
       // Second call returns cached
       const result2 = await cache.getScaffold('nts', 'm1');
@@ -126,7 +125,9 @@ describe('GraphDataCache', () => {
       await cache.ensureTestData('nts', 'm1', 'exec_time', ['test-A', 'test-B']);
 
       expect(api.postOneCursorPage).toHaveBeenCalledTimes(2);
-      expect(api.postOneCursorPage.mock.calls[1][1].test).toEqual(['test-B']);
+      // Second call body should only include test-B in the test array
+      const body = api.postOneCursorPage.mock.calls[1][1];
+      expect(body.test).toEqual(['test-B']);
     });
 
     it('is a no-op for fully cached tests', async () => {
@@ -216,7 +217,8 @@ describe('GraphDataCache', () => {
 
       expect(api.postOneCursorPage).toHaveBeenCalledTimes(2);
       // Second call should only request test-B
-      expect(api.postOneCursorPage.mock.calls[1][1].test).toEqual(['test-B']);
+      const body = api.postOneCursorPage.mock.calls[1][1];
+      expect(body.test).toEqual(['test-B']);
       // Result includes both test-A and test-B points (merged)
       expect(result).toHaveLength(2);
       expect(result.map(p => p.test)).toEqual(['test-A', 'test-B']);
@@ -272,7 +274,7 @@ describe('GraphDataCache', () => {
   describe('getRegressions', () => {
     it('fetches active regressions with state filter', async () => {
       const items = [
-        { uuid: 'r1', title: 'Reg1', bug: null, state: 'active' as const, commit: '100', machine_count: 1, test_count: 1 },
+        { uuid: 'r1', title: 'Reg1', bug: null, state: 'active' as const, commit: '100', run_count: 1, test_count: 1 },
       ];
       api.fetchOneCursorPage.mockResolvedValueOnce({ items, nextCursor: null });
 

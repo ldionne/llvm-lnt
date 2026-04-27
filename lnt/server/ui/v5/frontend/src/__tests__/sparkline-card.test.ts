@@ -11,9 +11,9 @@ vi.stubGlobal('Plotly', {
 
 import {
   createSparklineCard, createSparklineLoading, createSparklineError,
-  machineColor,
 } from '../components/sparkline-card';
 import type { SparklineTrace } from '../components/sparkline-card';
+import { traceColor } from '../utils';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -117,13 +117,13 @@ describe('createSparklineError', () => {
   });
 });
 
-describe('machineColor', () => {
+describe('traceColor', () => {
   it('returns a color string', () => {
-    expect(machineColor(0)).toBe('#1f77b4');
-    expect(machineColor(1)).toBe('#ff7f0e');
+    expect(traceColor(0)).toBe('#1f77b4');
+    expect(traceColor(1)).toBe('#ff7f0e');
   });
 
   it('wraps around when index exceeds palette size', () => {
-    expect(machineColor(10)).toBe(machineColor(0));
+    expect(traceColor(10)).toBe(traceColor(0));
   });
 });

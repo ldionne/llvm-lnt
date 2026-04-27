@@ -2,11 +2,12 @@
 // Pure encode/decode functions for the URL query string.
 
 import type { AggFn } from '../../types';
+import { encodeParamQuery, decodeParamQuery } from '../../types';
 
-/** A pinned baseline reference (suite, machine, commit). */
+/** A pinned baseline reference (suite, params, commit). */
 export interface BaselineRef {
   suite: string;
-  machine: string;
+  params: Record<string, string>;
   commit: string;
 }
 
@@ -16,6 +17,9 @@ export type RegressionAnnotationMode = 'off' | 'active' | 'all';
 /** Complete URL-reflected state for the Graph page. */
 export interface GraphState {
   suite: string;
+  /** Each trace is a parameter query (set of key:value pairs). */
+  traces: Array<Record<string, string>>;
+  /** Legacy: machine names from old URLs (converted to traces on load). */
   machines: string[];
   metric: string;
   testFilter: string;
@@ -46,13 +50,13 @@ function parseRegMode(value: string | null): RegressionAnnotationMode {
 function parseBaseline(encoded: string): BaselineRef | null {
   const parts = encoded.split(BASELINE_SEP);
   if (parts.length !== 3) return null;
-  const [suite, machine, commit] = parts;
-  if (!suite || !machine || !commit) return null;
-  return { suite, machine, commit };
+  const [suite, paramsStr, commit] = parts;
+  if (!suite || !commit) return null;
+  return { suite, params: decodeParamQuery(paramsStr || ''), commit };
 }
 
 function encodeBaseline(b: BaselineRef): string {
-  return `${b.suite}${BASELINE_SEP}${b.machine}${BASELINE_SEP}${b.commit}`;
+  return `${b.suite}${BASELINE_SEP}${encodeParamQuery(b.params)}${BASELINE_SEP}${b.commit}`;
 }
 
 /** Decode URL search string into typed GraphState. */
@@ -60,6 +64,7 @@ export function decodeGraphState(search: string): GraphState {
   const params = new URLSearchParams(search);
   return {
     suite: params.get('suite') || '',
+    traces: params.getAll('trace').filter(t => t.length > 0).map(decodeParamQuery),
     machines: params.getAll('machine').filter(m => m.length > 0),
     metric: params.get('metric') || '',
     testFilter: params.get('test_filter') || '',
@@ -77,7 +82,7 @@ export function encodeGraphState(state: GraphState): string {
   const params = new URLSearchParams();
 
   if (state.suite) params.set('suite', state.suite);
-  for (const m of state.machines) params.append('machine', m);
+  for (const t of state.traces) params.append('trace', encodeParamQuery(t));
   if (state.metric) params.set('metric', state.metric);
   if (state.testFilter) params.set('test_filter', state.testFilter);
   if (state.runAgg !== DEFAULT_AGG) params.set('run_agg', state.runAgg);

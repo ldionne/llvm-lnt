@@ -2,6 +2,7 @@
 // Module-level instance survives mount/unmount for instant back-nav.
 
 import type { QueryDataPoint, CommitSummary, RegressionListItem } from '../../types';
+import { paramsToApiQuery, decodeParamQuery } from '../../types';
 import type { CursorPageResult } from '../../api';
 import { commitDisplayValue } from '../../utils';
 
@@ -13,20 +14,20 @@ export interface GraphDataApi {
 
 const PAGE_LIMIT = 10000;
 
-function dataKey(suite: string, machine: string, metric: string, test: string): string {
-  return `${suite}\0${machine}\0${metric}\0${test}`;
+function dataKey(suite: string, trace: string, metric: string, test: string): string {
+  return `${suite}\0${trace}\0${metric}\0${test}`;
 }
 
-function baselineKey(suite: string, machine: string, commit: string, metric: string): string {
-  return `${suite}\0${machine}\0${commit}\0${metric}`;
+function baselineKey(suite: string, trace: string, commit: string, metric: string): string {
+  return `${suite}\0${trace}\0${commit}\0${metric}`;
 }
 
-function testNamesKey(suite: string, machine: string, metric: string): string {
-  return `${suite}\0${machine}\0${metric}`;
+function testNamesKey(suite: string, trace: string, metric: string): string {
+  return `${suite}\0${trace}\0${metric}`;
 }
 
-function scaffoldKey(suite: string, machine: string): string {
-  return `${suite}\0${machine}`;
+function scaffoldKey(suite: string, trace: string): string {
+  return `${suite}\0${trace}`;
 }
 
 function regressionKey(suite: string, mode: string): string {
@@ -52,21 +53,24 @@ export class GraphDataCache {
 
   // ---- Scaffold ----
 
+  /** Fetch scaffold (commit list) for a trace.
+   *  The trace parameter is the encoded param query string (e.g. "compiler:clang-21,os:linux"). */
   async getScaffold(
     suite: string,
-    machine: string,
+    trace: string,
     signal?: AbortSignal,
   ): Promise<string[]> {
-    const key = scaffoldKey(suite, machine);
+    const key = scaffoldKey(suite, trace);
     const cached = this.scaffolds.get(key);
     if (cached) return cached.commits;
 
     const entries: ScaffoldEntry[] = [];
     let cursor: string | undefined;
     const commitsUrl = this.api.apiUrl(suite, 'commits');
+    const traceParams = paramsToApiQuery(decodeParamQuery(trace));
     while (true) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      const params: Record<string, string> = { machine, sort: 'ordinal', limit: '10000' };
+      const params: Record<string, string> = { ...traceParams, sort: 'ordinal', limit: '10000' };
       if (cursor) params.cursor = cursor;
       const page = await this.api.fetchOneCursorPage<CommitSummary>(commitsUrl, params, signal);
       for (const item of page.items) {
@@ -84,18 +88,19 @@ export class GraphDataCache {
 
   // ---- Test Discovery ----
 
-  async discoverTests(suite: string, machine: string, metric: string, signal?: AbortSignal): Promise<string[]> {
-    const key = testNamesKey(suite, machine, metric);
+  async discoverTests(suite: string, trace: string, metric: string, signal?: AbortSignal): Promise<string[]> {
+    const key = testNamesKey(suite, trace, metric);
     const cached = this.testNames.get(key);
     if (cached) return cached;
 
     const allNames: string[] = [];
     let cursor: string | undefined;
     const url = this.api.apiUrl(suite, 'tests');
+    const traceParams = paramsToApiQuery(decodeParamQuery(trace));
     while (true) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const params: Record<string, string | string[]> = {
-        machine,
+        ...traceParams,
         metric,
         limit: '10000',
       };
@@ -113,38 +118,39 @@ export class GraphDataCache {
   // ---- Query Data ----
 
   async ensureTestData(
-    suite: string, machine: string, metric: string, tests: string[],
+    suite: string, trace: string, metric: string, tests: string[],
     opts?: { signal?: AbortSignal; onProgress?: () => void },
   ): Promise<void> {
     const uncached = tests.filter(t => {
-      const key = dataKey(suite, machine, metric, t);
+      const key = dataKey(suite, trace, metric, t);
       const entry = this.data.get(key);
       return !entry || !entry.complete;
     });
     if (uncached.length === 0) return;
 
     for (const t of uncached) {
-      const key = dataKey(suite, machine, metric, t);
+      const key = dataKey(suite, trace, metric, t);
       this.data.set(key, { points: [], complete: false });
     }
 
-    const queryUrl = this.api.apiUrl(suite, 'query');
+    const samplesUrl = this.api.apiUrl(suite, 'samples');
+    const traceParams = decodeParamQuery(trace);
     let cursor: string | undefined;
     while (true) {
       if (opts?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const body: Record<string, unknown> = {
-        machine,
+        params: traceParams,
         metric,
         test: uncached,
-        sort: 'test,commit',
+        sort: 'ordinal',
         limit: PAGE_LIMIT,
       };
       if (cursor) body.cursor = cursor;
 
-      const page = await this.api.postOneCursorPage<QueryDataPoint>(queryUrl, body, opts?.signal);
+      const page = await this.api.postOneCursorPage<QueryDataPoint>(samplesUrl, body, opts?.signal);
 
       for (const pt of page.items) {
-        const key = dataKey(suite, machine, metric, pt.test);
+        const key = dataKey(suite, trace, metric, pt.test);
         const entry = this.data.get(key);
         if (entry) entry.points.push(pt);
       }
@@ -156,7 +162,7 @@ export class GraphDataCache {
     }
 
     for (const t of uncached) {
-      const key = dataKey(suite, machine, metric, t);
+      const key = dataKey(suite, trace, metric, t);
       const entry = this.data.get(key);
       if (entry) entry.complete = true;
     }
@@ -164,14 +170,14 @@ export class GraphDataCache {
     if (opts?.onProgress) opts.onProgress();
   }
 
-  readCachedTestData(suite: string, machine: string, metric: string, test: string): QueryDataPoint[] {
-    const key = dataKey(suite, machine, metric, test);
+  readCachedTestData(suite: string, trace: string, metric: string, test: string): QueryDataPoint[] {
+    const key = dataKey(suite, trace, metric, test);
     const entry = this.data.get(key);
     return entry ? entry.points : [];
   }
 
-  isComplete(suite: string, machine: string, metric: string, test: string): boolean {
-    const key = dataKey(suite, machine, metric, test);
+  isComplete(suite: string, trace: string, metric: string, test: string): boolean {
+    const key = dataKey(suite, trace, metric, test);
     const entry = this.data.get(key);
     return entry?.complete ?? false;
   }
@@ -179,10 +185,10 @@ export class GraphDataCache {
   // ---- Baseline Data (cross-suite, delta-fetch) ----
 
   async getBaselineData(
-    suite: string, machine: string, commit: string, metric: string,
+    suite: string, trace: string, commit: string, metric: string,
     tests: string[], signal?: AbortSignal,
   ): Promise<QueryDataPoint[]> {
-    const key = baselineKey(suite, machine, commit, metric);
+    const key = baselineKey(suite, trace, commit, metric);
     const cached = this.baselineData.get(key);
 
     // Delta-fetch: only request tests not already cached
@@ -192,20 +198,21 @@ export class GraphDataCache {
 
     if (newTests.length === 0 && cached) return cached.points;
 
-    const queryUrl = this.api.apiUrl(suite, 'query');
+    const samplesUrl = this.api.apiUrl(suite, 'samples');
+    const traceParams = decodeParamQuery(trace);
     const fetched: QueryDataPoint[] = [];
     let cursor: string | undefined;
     while (true) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       const body: Record<string, unknown> = {
-        machine,
+        params: traceParams,
         metric,
         commit,
         test: newTests,
         limit: PAGE_LIMIT,
       };
       if (cursor) body.cursor = cursor;
-      const page = await this.api.postOneCursorPage<QueryDataPoint>(queryUrl, body, signal);
+      const page = await this.api.postOneCursorPage<QueryDataPoint>(samplesUrl, body, signal);
       for (const pt of page.items) fetched.push(pt);
       if (!page.nextCursor) break;
       cursor = page.nextCursor;
@@ -223,21 +230,21 @@ export class GraphDataCache {
     }
   }
 
-  readCachedBaselineData(suite: string, machine: string, commit: string, metric: string): QueryDataPoint[] {
-    const key = baselineKey(suite, machine, commit, metric);
+  readCachedBaselineData(suite: string, trace: string, commit: string, metric: string): QueryDataPoint[] {
+    const key = baselineKey(suite, trace, commit, metric);
     const entry = this.baselineData.get(key);
     return entry ? entry.points : [];
   }
 
   scaffoldUnion(
     suite: string,
-    machineList: string[],
+    traceList: string[],
     commitFields?: Array<{ name: string; display?: boolean }>,
   ): { commits: string[]; displayMap: Map<string, string> } | null {
     const byCommit = new Map<string, number>();
     const displayMap = new Map<string, string>();
-    for (const m of machineList) {
-      const key = scaffoldKey(suite, m);
+    for (const t of traceList) {
+      const key = scaffoldKey(suite, t);
       const cached = this.scaffolds.get(key);
       if (cached) {
         for (const entry of cached.entries) {
@@ -261,18 +268,19 @@ export class GraphDataCache {
   // ---- Baseline Commits (cross-suite, not cleared on suite change) ----
 
   async getBaselineCommits(
-    suite: string, machine: string, signal?: AbortSignal,
+    suite: string, trace: string, signal?: AbortSignal,
   ): Promise<CommitSummary[]> {
-    const key = scaffoldKey(suite, machine);
+    const key = scaffoldKey(suite, trace);
     const cached = this.baselineCommits.get(key);
     if (cached) return cached;
 
     const allCommits: CommitSummary[] = [];
     let cursor: string | undefined;
     const url = this.api.apiUrl(suite, 'commits');
+    const traceParams = paramsToApiQuery(decodeParamQuery(trace));
     while (true) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      const params: Record<string, string> = { machine, sort: 'ordinal', limit: '10000' };
+      const params: Record<string, string> = { ...traceParams, sort: 'ordinal', limit: '10000' };
       if (cursor) params.cursor = cursor;
       const page = await this.api.fetchOneCursorPage<CommitSummary>(url, params, signal);
       for (const item of page.items) allCommits.push(item);

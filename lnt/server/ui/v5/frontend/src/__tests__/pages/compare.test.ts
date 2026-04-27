@@ -10,6 +10,7 @@ vi.mock('../../api', async (importOriginal) => {
     getSamples: vi.fn(),
     getRuns: vi.fn(),
     getMachines: vi.fn(),
+    getRunParameters: vi.fn(),
     getRegressions: vi.fn(),
     createRegression: vi.fn(),
     addRegressionIndicators: vi.fn(),
@@ -36,7 +37,7 @@ const plotlyMock = {
 };
 (globalThis as unknown as Record<string, unknown>).Plotly = plotlyMock;
 
-import { getFields, getSamples, getMachines } from '../../api';
+import { getFields, getSamples, getMachines, getRunParameters } from '../../api';
 import { getTestsuites } from '../../router';
 import { comparePage } from '../../pages/compare';
 import type { FieldInfo, SampleInfo } from '../../types';

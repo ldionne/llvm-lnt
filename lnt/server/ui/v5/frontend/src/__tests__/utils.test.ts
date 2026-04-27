@@ -487,7 +487,7 @@ describe('resolveDisplayMap', () => {
   it('returns map with display values when schema has display field', async () => {
     mockGetSuiteInfo.mockResolvedValue({
       name: 'nts',
-      schema: { metrics: [], commit_fields: [{ name: 'sha', display: true }], machine_fields: [] },
+      schema: { metrics: [], commit_fields: [{ name: 'sha', display: true }] },
     });
     mockResolve.mockResolvedValue({
       results: {
@@ -525,7 +525,7 @@ describe('resolveDisplayMap', () => {
   it('only includes entries where display value differs from raw commit', async () => {
     mockGetSuiteInfo.mockResolvedValue({
       name: 'nts',
-      schema: { metrics: [], commit_fields: [{ name: 'sha', display: true }], machine_fields: [] },
+      schema: { metrics: [], commit_fields: [{ name: 'sha', display: true }] },
     });
     mockResolve.mockResolvedValue({
       results: {

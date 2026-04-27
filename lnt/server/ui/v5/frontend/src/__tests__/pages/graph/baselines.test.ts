@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const mockMachineComboHandle = { destroy: vi.fn(), clear: vi.fn() };
-vi.mock('../../../components/machine-combobox', () => ({
-  renderMachineCombobox: vi.fn(() => mockMachineComboHandle),
+const mockSearchChipsHandle = { destroy: vi.fn(), setChips: vi.fn(), element: document.createElement('div') };
+vi.mock('../../../components/search-chips', () => ({
+  createSearchChips: vi.fn(() => mockSearchChipsHandle),
+  chipsToParams: vi.fn(() => ({})),
 }));
 
 const mockCommitPickerHandle = {
@@ -20,12 +21,12 @@ vi.mock('../../../combobox', async (importOriginal) => {
 });
 
 import { createBaselinePanel, type BaselinePanelCallbacks } from '../../../pages/graph/baselines';
-import { renderMachineCombobox } from '../../../components/machine-combobox';
+import { createSearchChips, chipsToParams } from '../../../components/search-chips';
 import { createCommitPicker } from '../../../combobox';
 import type { BaselineRef } from '../../../pages/graph/state';
 
-function makeBaseline(suite = 'nts', machine = 'm1', commit = 'abc'): BaselineRef {
-  return { suite, machine, commit };
+function makeBaseline(suite = 'nts', params: Record<string, string> = { compiler: 'clang' }, commit = 'abc'): BaselineRef {
+  return { suite, params, commit };
 }
 
 function makeCallbacks(overrides?: Partial<BaselinePanelCallbacks>): BaselinePanelCallbacks {
@@ -43,6 +44,7 @@ describe('createBaselinePanel', () => {
     vi.clearAllMocks();
     mockCommitPickerHandle.input = document.createElement('input');
     mockCommitPickerHandle.element = document.createElement('div');
+    mockSearchChipsHandle.element = document.createElement('div');
   });
 
   // ---- DOM structure and initial state ----
@@ -64,14 +66,14 @@ describe('createBaselinePanel', () => {
   });
 
   it('renders initial baseline chips with display values from displayMap', () => {
-    const bl = makeBaseline('nts', 'm1', 'abc');
+    const bl = makeBaseline('nts', { compiler: 'clang' }, 'abc');
     const displayMap = new Map([['abc', 'v1.0']]);
     const handle = createBaselinePanel([bl], displayMap, ['nts'], makeCallbacks());
     const panel = handle.getElement();
 
     const chips = panel.querySelectorAll('.baseline-chip');
     expect(chips.length).toBe(1);
-    expect(chips[0].textContent).toContain('nts/m1/v1.0');
+    expect(chips[0].textContent).toContain('nts/compiler:clang/v1.0');
   });
 
   it('renders suite dropdown inside form with all suites', () => {
@@ -105,7 +107,7 @@ describe('createBaselinePanel', () => {
 
   // ---- Cascading dropdowns ----
 
-  it('suite change creates machine combobox for selected suite', () => {
+  it('suite change creates search chips for selected suite', () => {
     const handle = createBaselinePanel([], new Map(), ['nts', 'other'], makeCallbacks());
     const panel = handle.getElement();
 
@@ -115,31 +117,30 @@ describe('createBaselinePanel', () => {
     suiteSelect.value = 'nts';
     suiteSelect.dispatchEvent(new Event('change'));
 
-    expect(renderMachineCombobox).toHaveBeenCalledWith(
-      expect.any(HTMLElement),
+    expect(createSearchChips).toHaveBeenCalledWith(
       expect.objectContaining({ testsuite: 'nts' }),
     );
   });
 
-  it('suite change to empty clears machine combobox and commit picker', () => {
+  it('suite change to empty clears search chips and commit picker', () => {
     const handle = createBaselinePanel([], new Map(), ['nts'], makeCallbacks());
     const panel = handle.getElement();
 
-    // Show form, select suite to create machine combobox
+    // Show form, select suite to create search chips
     (panel.querySelector('.baseline-add-btn') as HTMLElement).click();
     const suiteSelect = panel.querySelector('.suite-select') as HTMLSelectElement;
     suiteSelect.value = 'nts';
     suiteSelect.dispatchEvent(new Event('change'));
-    expect(renderMachineCombobox).toHaveBeenCalledTimes(1);
+    expect(createSearchChips).toHaveBeenCalledTimes(1);
 
     // Change suite to empty
-    mockMachineComboHandle.destroy.mockClear();
+    mockSearchChipsHandle.destroy.mockClear();
     suiteSelect.value = '';
     suiteSelect.dispatchEvent(new Event('change'));
-    expect(mockMachineComboHandle.destroy).toHaveBeenCalled();
+    expect(mockSearchChipsHandle.destroy).toHaveBeenCalled();
   });
 
-  it('machine selection triggers loadCommits and creates commit picker', async () => {
+  it('param selection triggers loadCommits and creates commit picker', async () => {
     const commits = [
       { commit: 'abc', ordinal: 1, tag: null, fields: {} },
       { commit: 'def', ordinal: 2, tag: null, fields: {} },
@@ -147,6 +148,10 @@ describe('createBaselinePanel', () => {
     const callbacks = makeCallbacks({
       getBaselineCommits: vi.fn().mockResolvedValue(commits),
     });
+
+    // Make chipsToParams return a non-empty params object
+    vi.mocked(chipsToParams).mockReturnValue({ compiler: 'clang' });
+
     const handle = createBaselinePanel([], new Map(), ['nts'], callbacks);
     const panel = handle.getElement();
 
@@ -156,54 +161,15 @@ describe('createBaselinePanel', () => {
     suiteSelect.value = 'nts';
     suiteSelect.dispatchEvent(new Event('change'));
 
-    // Capture and trigger machine onSelect
-    const machineCall = vi.mocked(renderMachineCombobox).mock.calls[0];
-    machineCall[1].onSelect('m1');
+    // Capture and trigger the search chips onChange callback
+    const searchChipsCall = vi.mocked(createSearchChips).mock.calls[0];
+    searchChipsCall[0].onChange([{ key: 'compiler', value: 'clang' }]);
 
     await vi.waitFor(() => {
       expect(createCommitPicker).toHaveBeenCalled();
     });
 
-    expect(callbacks.getBaselineCommits).toHaveBeenCalledWith('nts', 'm1', expect.any(AbortSignal));
-  });
-
-  it('changing machine aborts previous commit fetch and starts new one', async () => {
-    const deferred1 = new Promise<unknown[]>(() => {});
-
-    const callbacks = makeCallbacks({
-      getBaselineCommits: vi.fn()
-        .mockReturnValueOnce(deferred1)
-        .mockResolvedValueOnce([{ commit: 'xyz', ordinal: 1, tag: null, fields: {} }]),
-    });
-    const handle = createBaselinePanel([], new Map(), ['nts'], callbacks);
-    const panel = handle.getElement();
-
-    (panel.querySelector('.baseline-add-btn') as HTMLElement).click();
-    const suiteSelect = panel.querySelector('.suite-select') as HTMLSelectElement;
-    suiteSelect.value = 'nts';
-    suiteSelect.dispatchEvent(new Event('change'));
-
-    // First machine selection (will block on deferred1)
-    const machineCall1 = vi.mocked(renderMachineCombobox).mock.calls[0];
-    machineCall1[1].onSelect('m1');
-
-    // Capture the signal from the first call
-    const firstSignal = (callbacks.getBaselineCommits as ReturnType<typeof vi.fn>).mock.calls[0][2] as AbortSignal;
-
-    // Destroy and recreate for second machine (suite change triggers clearMachine)
-    // In practice, the loadCommits function aborts the previous fetch before starting
-    // a new one when onSelect is called again. But the machine combobox is recreated
-    // on suite change, not on successive machine selections. The abort happens inside
-    // loadCommits which is called on each machine select.
-    machineCall1[1].onSelect('m2');
-
-    // First signal should be aborted
-    expect(firstSignal.aborted).toBe(true);
-
-    // Let the second call complete
-    await vi.waitFor(() => {
-      expect(createCommitPicker).toHaveBeenCalled();
-    });
+    expect(callbacks.getBaselineCommits).toHaveBeenCalledWith('nts', { compiler: 'clang' }, expect.any(AbortSignal));
   });
 
   it('commit selection calls onBaselineAdd and resets picker input', async () => {
@@ -211,17 +177,20 @@ describe('createBaselinePanel', () => {
     const callbacks = makeCallbacks({
       getBaselineCommits: vi.fn().mockResolvedValue(commits),
     });
+
+    vi.mocked(chipsToParams).mockReturnValue({ compiler: 'clang' });
+
     const handle = createBaselinePanel([], new Map(), ['nts'], callbacks);
     const panel = handle.getElement();
 
-    // Set up cascading: show form -> select suite -> select machine
+    // Set up cascading: show form -> select suite -> add params
     (panel.querySelector('.baseline-add-btn') as HTMLElement).click();
     const suiteSelect = panel.querySelector('.suite-select') as HTMLSelectElement;
     suiteSelect.value = 'nts';
     suiteSelect.dispatchEvent(new Event('change'));
 
-    const machineCall = vi.mocked(renderMachineCombobox).mock.calls[0];
-    machineCall[1].onSelect('m1');
+    const searchChipsCall = vi.mocked(createSearchChips).mock.calls[0];
+    searchChipsCall[0].onChange([{ key: 'compiler', value: 'clang' }]);
 
     await vi.waitFor(() => {
       expect(createCommitPicker).toHaveBeenCalled();
@@ -234,7 +203,7 @@ describe('createBaselinePanel', () => {
 
     expect(callbacks.onBaselineAdd).toHaveBeenCalledWith({
       suite: 'nts',
-      machine: 'm1',
+      params: { compiler: 'clang' },
       commit: 'abc',
     });
     expect(mockCommitPickerHandle.input.value).toBe('');
@@ -246,6 +215,8 @@ describe('createBaselinePanel', () => {
     const callbacks = makeCallbacks({
       getBaselineCommits: vi.fn().mockRejectedValue(new Error('Network fail')),
     });
+    vi.mocked(chipsToParams).mockReturnValue({ compiler: 'clang' });
+
     const handle = createBaselinePanel([], new Map(), ['nts'], callbacks);
     const panel = handle.getElement();
 
@@ -254,8 +225,8 @@ describe('createBaselinePanel', () => {
     suiteSelect.value = 'nts';
     suiteSelect.dispatchEvent(new Event('change'));
 
-    const machineCall = vi.mocked(renderMachineCombobox).mock.calls[0];
-    machineCall[1].onSelect('m1');
+    const searchChipsCall = vi.mocked(createSearchChips).mock.calls[0];
+    searchChipsCall[0].onChange([{ key: 'compiler', value: 'clang' }]);
 
     await vi.waitFor(() => {
       const errorEl = panel.querySelector('.error-text');
@@ -268,6 +239,8 @@ describe('createBaselinePanel', () => {
     const callbacks = makeCallbacks({
       getBaselineCommits: vi.fn().mockRejectedValue(new DOMException('Aborted', 'AbortError')),
     });
+    vi.mocked(chipsToParams).mockReturnValue({ compiler: 'clang' });
+
     const handle = createBaselinePanel([], new Map(), ['nts'], callbacks);
     const panel = handle.getElement();
 
@@ -276,8 +249,8 @@ describe('createBaselinePanel', () => {
     suiteSelect.value = 'nts';
     suiteSelect.dispatchEvent(new Event('change'));
 
-    const machineCall = vi.mocked(renderMachineCombobox).mock.calls[0];
-    machineCall[1].onSelect('m1');
+    const searchChipsCall = vi.mocked(createSearchChips).mock.calls[0];
+    searchChipsCall[0].onChange([{ key: 'compiler', value: 'clang' }]);
 
     // Give the async rejection time to propagate
     await vi.waitFor(() => {
@@ -290,8 +263,8 @@ describe('createBaselinePanel', () => {
   // ---- Chip management ----
 
   it('chip remove button calls onBaselineRemove', () => {
-    const bl1 = makeBaseline('nts', 'm1', 'abc');
-    const bl2 = makeBaseline('nts', 'm2', 'def');
+    const bl1 = makeBaseline('nts', { compiler: 'clang' }, 'abc');
+    const bl2 = makeBaseline('nts', { compiler: 'gcc' }, 'def');
     const callbacks = makeCallbacks();
     const handle = createBaselinePanel([bl1, bl2], new Map(), ['nts'], callbacks);
     const panel = handle.getElement();
@@ -307,12 +280,12 @@ describe('createBaselinePanel', () => {
     const panel = handle.getElement();
     expect(panel.querySelectorAll('.baseline-chip').length).toBe(0);
 
-    const bl = makeBaseline('nts', 'm1', 'abc');
+    const bl = makeBaseline('nts', { compiler: 'clang' }, 'abc');
     handle.updateChips([bl], new Map([['abc', 'v2.0']]));
 
     const chips = panel.querySelectorAll('.baseline-chip');
     expect(chips.length).toBe(1);
-    expect(chips[0].textContent).toContain('nts/m1/v2.0');
+    expect(chips[0].textContent).toContain('nts/compiler:clang/v2.0');
   });
 
   // ---- Handle methods ----
@@ -323,16 +296,19 @@ describe('createBaselinePanel', () => {
     const callbacks = makeCallbacks({
       getBaselineCommits: vi.fn().mockReturnValue(blockingPromise),
     });
+    vi.mocked(chipsToParams).mockReturnValue({ compiler: 'clang' });
+
     const handle = createBaselinePanel([], new Map(), ['nts'], callbacks);
     const panel = handle.getElement();
 
-    // Show form, select suite, select machine (starts pending fetch)
+    // Show form, select suite, add params (starts pending fetch)
     (panel.querySelector('.baseline-add-btn') as HTMLElement).click();
     const suiteSelect = panel.querySelector('.suite-select') as HTMLSelectElement;
     suiteSelect.value = 'nts';
     suiteSelect.dispatchEvent(new Event('change'));
-    const machineCall = vi.mocked(renderMachineCombobox).mock.calls[0];
-    machineCall[1].onSelect('m1');
+
+    const searchChipsCall = vi.mocked(createSearchChips).mock.calls[0];
+    searchChipsCall[0].onChange([{ key: 'compiler', value: 'clang' }]);
 
     // Capture abort signal before reset
     const signal = (callbacks.getBaselineCommits as ReturnType<typeof vi.fn>).mock.calls[0][2] as AbortSignal;
@@ -345,14 +321,16 @@ describe('createBaselinePanel', () => {
     expect(addBtn.style.display).toBe('');
     expect(suiteSelect.value).toBe('');
     expect(signal.aborted).toBe(true);
-    expect(mockMachineComboHandle.destroy).toHaveBeenCalled();
+    expect(mockSearchChipsHandle.destroy).toHaveBeenCalled();
   });
 
-  it('destroy cleans up machine handle, commit picker, and abort controller', async () => {
+  it('destroy cleans up search chips, commit picker, and abort controller', async () => {
     const commits = [{ commit: 'abc', ordinal: 1, tag: null, fields: {} }];
     const callbacks = makeCallbacks({
       getBaselineCommits: vi.fn().mockResolvedValue(commits),
     });
+    vi.mocked(chipsToParams).mockReturnValue({ compiler: 'clang' });
+
     const handle = createBaselinePanel([], new Map(), ['nts'], callbacks);
     const panel = handle.getElement();
 
@@ -361,18 +339,19 @@ describe('createBaselinePanel', () => {
     const suiteSelect = panel.querySelector('.suite-select') as HTMLSelectElement;
     suiteSelect.value = 'nts';
     suiteSelect.dispatchEvent(new Event('change'));
-    const machineCall = vi.mocked(renderMachineCombobox).mock.calls[0];
-    machineCall[1].onSelect('m1');
+
+    const searchChipsCall = vi.mocked(createSearchChips).mock.calls[0];
+    searchChipsCall[0].onChange([{ key: 'compiler', value: 'clang' }]);
 
     await vi.waitFor(() => {
       expect(createCommitPicker).toHaveBeenCalled();
     });
 
-    mockMachineComboHandle.destroy.mockClear();
+    mockSearchChipsHandle.destroy.mockClear();
     mockCommitPickerHandle.destroy.mockClear();
 
     handle.destroy();
-    expect(mockMachineComboHandle.destroy).toHaveBeenCalled();
+    expect(mockSearchChipsHandle.destroy).toHaveBeenCalled();
     expect(mockCommitPickerHandle.destroy).toHaveBeenCalled();
   });
 

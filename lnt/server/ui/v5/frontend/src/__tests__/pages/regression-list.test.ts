@@ -48,7 +48,7 @@ const mockRegressions: RegressionListItem[] = [
     bug: 'https://bugs.example.com/1',
     state: 'detected',
     commit: 'abc123',
-    machine_count: 2,
+    run_count: 2,
     test_count: 5,
   },
   {
@@ -57,7 +57,7 @@ const mockRegressions: RegressionListItem[] = [
     bug: null,
     state: 'active',
     commit: null,
-    machine_count: 1,
+    run_count: 1,
     test_count: 3,
   },
 ];

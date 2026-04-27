@@ -3,9 +3,9 @@
 
 import type { PageModule, RouteParams } from '../router';
 import type { SampleInfo, ProfileListItem } from '../types';
-import { getRun, getFields, getProfilesForRun, deleteRun, fetchOneCursorPage, apiUrl, getTestSuiteInfoCached, getCommit } from '../api';
+import { encodeParamQuery } from '../types';
+import { getRun, getFields, getProfilesForRun, deleteRun, postOneCursorPage, apiUrl, getTestSuiteInfoCached, getCommit } from '../api';
 import { el, spaLink, agnosticLink, formatValue, formatTime, debounce, commitDisplayValue, matchesFilter, updateFilterValidation } from '../utils';
-import { navigate } from '../router';
 import { renderDataTable } from '../components/data-table';
 import { renderMetricSelector, filterMetricFields } from '../components/metric-selector';
 import { renderDeleteConfirm } from '../components/delete-confirm';
@@ -42,7 +42,6 @@ export const runDetailPage: PageModule = {
     let allSamples: SampleInfo[] = [];
     let currentMetric = '';
     let testFilter = '';
-    let machineName = '';
     let profileTestSet = new Set<string>();
 
     Promise.all([
@@ -52,7 +51,6 @@ export const runDetailPage: PageModule = {
       getProfilesForRun(ts, uuid, activeFetchController!.signal).catch(() => [] as ProfileListItem[]),
     ]).then(async ([run, fields, suiteInfo, profiles]) => {
       loading.remove();
-      machineName = run.machine;
       profileTestSet = new Set(profiles.map(p => p.test));
 
       // Resolve commit display value (fetch CommitDetail for fields)
@@ -68,10 +66,6 @@ export const runDetailPage: PageModule = {
       const dl = el('dl', { class: 'metadata-dl' });
       dl.append(el('dt', {}, 'UUID'), el('dd', {}, run.uuid));
 
-      const machineDd = el('dd', {});
-      machineDd.append(spaLink(run.machine, `/machines/${encodeURIComponent(run.machine)}`));
-      dl.append(el('dt', {}, 'Machine'), machineDd);
-
       const commitDd = el('dd', {});
       commitDd.append(spaLink(commitDisplay, `/commits/${encodeURIComponent(run.commit)}`));
       dl.append(el('dt', {}, 'Commit'), commitDd);
@@ -84,9 +78,10 @@ export const runDetailPage: PageModule = {
       metaContainer.append(dl);
 
       // Actions
+      const paramsEncoded = encodeParamQuery(run.run_parameters || {});
       const compareLink = agnosticLink(
         'Compare with\u2026',
-        `/compare?suite_a=${encodeURIComponent(ts)}&machine_a=${encodeURIComponent(run.machine)}&commit_a=${encodeURIComponent(run.commit)}&runs_a=${encodeURIComponent(uuid)}`,
+        `/compare?suite_a=${encodeURIComponent(ts)}&params_a=${encodeURIComponent(paramsEncoded)}&commit_a=${encodeURIComponent(run.commit)}&runs_a=${encodeURIComponent(uuid)}`,
       );
       compareLink.classList.add('action-link');
       actionsContainer.append(compareLink);
@@ -99,7 +94,10 @@ export const runDetailPage: PageModule = {
         confirmValue: shortUuid,
         placeholder: 'Run UUID prefix',
         onDelete: () => deleteRun(ts, uuid),
-        onSuccess: () => navigate(`/machines/${encodeURIComponent(machineName)}`),
+        onSuccess: () => {
+          // Navigate to test suites page after deletion
+          window.location.assign(`${typeof (globalThis as Record<string, unknown>).lnt_url_base === 'string' ? (globalThis as Record<string, unknown>).lnt_url_base as string : ''}/v5/test-suites?suite=${encodeURIComponent(ts)}`);
+        },
         confirmContainer: deleteConfirmDiv,
       });
 
@@ -141,11 +139,11 @@ export const runDetailPage: PageModule = {
       let cursor: string | null = null;
       try {
         do {
-          const params: Record<string, string> = { limit: '2000' };
-          if (cursor) params.cursor = cursor;
-          const page = await fetchOneCursorPage<SampleInfo>(
-            apiUrl(tsName, `runs/${encodeURIComponent(runUuid)}/samples`),
-            params,
+          const body: Record<string, unknown> = { run: runUuid, limit: 2000 };
+          if (cursor) body.cursor = cursor;
+          const page = await postOneCursorPage<SampleInfo>(
+            apiUrl(tsName, 'samples'),
+            body,
             signal,
           );
           allSamples.push(...page.items);

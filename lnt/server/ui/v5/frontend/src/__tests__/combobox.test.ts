@@ -1,21 +1,14 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SideSelection } from '../types';
 
-// Mock the API module
-vi.mock('../api', () => ({
-  getMachines: vi.fn().mockResolvedValue({ items: [] }),
-  getRuns: vi.fn().mockResolvedValue([]),
-}));
-
-import { getMachines } from '../api';
 import {
-  createMachineCombobox, createCommitCombobox, createCommitPicker,
+  createCommitCombobox, createCommitPicker,
   resetComboboxState, type ComboboxContext,
 } from '../combobox';
 
 function makeContext(overrides?: Partial<ComboboxContext>): ComboboxContext {
-  const sideA: SideSelection = { suite: '', commit: '', machine: '', runs: [], runAgg: 'median' };
+  const sideA: SideSelection = { suite: '', commit: '', params: {}, runs: [], runAgg: 'median' };
   return {
     getCommitData: () => ({
       cachedCommitValues: ['100', '101', '102'],
@@ -26,7 +19,7 @@ function makeContext(overrides?: Partial<ComboboxContext>): ComboboxContext {
       setSide: (partial: Partial<SideSelection>) => Object.assign(sideA, partial),
       label: 'Side A',
     }),
-    fetchCommitsForMachine: vi.fn().mockResolvedValue(undefined),
+    fetchCommitsForParams: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -86,8 +79,8 @@ describe('createCommitCombobox', () => {
     wrapper.remove();
   });
 
-  it('disables commit input with loading placeholder when machine is set (URL-restored)', () => {
-    const sideA: SideSelection = { suite: 'nts', commit: '', machine: 'clang-x86', runs: [], runAgg: 'median' };
+  it('disables commit input with loading placeholder when params are set (URL-restored)', () => {
+    const sideA: SideSelection = { suite: 'nts', commit: '', params: { compiler: 'clang' }, runs: [], runAgg: 'median' };
     const ctx = makeContext({
       getSideState: () => ({
         selection: sideA,
@@ -106,7 +99,7 @@ describe('createCommitCombobox', () => {
   });
 
   it('calls setSide with commit value on selection', () => {
-    const sideA: SideSelection = { suite: '', commit: '', machine: '', runs: [], runAgg: 'median' };
+    const sideA: SideSelection = { suite: '', commit: '', params: {}, runs: [], runAgg: 'median' };
     const setSide = vi.fn();
     const ctx = makeContext({
       getSideState: () => ({
@@ -147,7 +140,7 @@ describe('createCommitCombobox', () => {
   });
 
   it('shows value in input on URL restore', () => {
-    const sideA: SideSelection = { suite: '', commit: '102', machine: '', runs: [], runAgg: 'median' };
+    const sideA: SideSelection = { suite: '', commit: '102', params: {}, runs: [], runAgg: 'median' };
     const ctx = makeContext({
       getSideState: () => ({
         selection: sideA,
@@ -165,7 +158,7 @@ describe('createCommitCombobox', () => {
   });
 
   it('shows value in input for existing commit', () => {
-    const sideA: SideSelection = { suite: '', commit: '101', machine: '', runs: [], runAgg: 'median' };
+    const sideA: SideSelection = { suite: '', commit: '101', params: {}, runs: [], runAgg: 'median' };
     const ctx = makeContext({
       getSideState: () => ({
         selection: sideA,
@@ -182,8 +175,8 @@ describe('createCommitCombobox', () => {
     wrapper.remove();
   });
 
-  it('disables commit input when no machine is selected', () => {
-    const sideA: SideSelection = { suite: 'nts', commit: '', machine: '', runs: [], runAgg: 'median' };
+  it('disables commit input when no params are selected', () => {
+    const sideA: SideSelection = { suite: 'nts', commit: '', params: {}, runs: [], runAgg: 'median' };
     const ctx = makeContext({
       getSideState: () => ({
         selection: sideA,
@@ -196,13 +189,13 @@ describe('createCommitCombobox', () => {
 
     const input = wrapper.querySelector('input')! as HTMLInputElement;
     expect(input.disabled).toBe(true);
-    expect(input.placeholder).toBe('Select a machine first');
+    expect(input.placeholder).toBe('Add parameters first');
 
     wrapper.remove();
   });
 
-  it('disables commit input with loading placeholder when machine is pre-set', () => {
-    const sideA: SideSelection = { suite: 'nts', commit: '', machine: 'clang-x86', runs: [], runAgg: 'median' };
+  it('disables commit input with loading placeholder when params are pre-set', () => {
+    const sideA: SideSelection = { suite: 'nts', commit: '', params: { compiler: 'clang' }, runs: [], runAgg: 'median' };
     const ctx = makeContext({
       getSideState: () => ({
         selection: sideA,
@@ -679,246 +672,6 @@ describe('createCommitPicker', () => {
     expect(onSelect).toHaveBeenCalledWith('100');
 
     picker.element.remove();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// createMachineCombobox validation tests
-// ---------------------------------------------------------------------------
-
-const mockGetMachines = getMachines as ReturnType<typeof vi.fn>;
-
-const MACHINES = [
-  { name: 'clang-x86', info: {} },
-  { name: 'clang-arm', info: {} },
-  { name: 'gcc-x86', info: {} },
-];
-
-describe('createMachineCombobox', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.clearAllMocks();
-    resetComboboxState();
-    document.body.innerHTML = '';
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  function makeMachineCtx(overrides?: Partial<ComboboxContext>): ComboboxContext {
-    const sideA: SideSelection = { suite: 'nts', commit: '', machine: '', runs: [], runAgg: 'median' };
-    return {
-      getCommitData: () => ({
-        cachedCommitValues: [],
-      }),
-      getSuiteName: () => 'nts',
-      getSideState: () => ({
-        selection: sideA,
-        setSide: (partial: Partial<SideSelection>) => Object.assign(sideA, partial),
-        label: 'Side A',
-      }),
-      fetchCommitsForMachine: vi.fn().mockResolvedValue(undefined),
-      ...overrides,
-    };
-  }
-
-  /** Create combobox and resolve the initial machine list fetch. */
-  async function createAndLoad(
-    ctx?: ComboboxContext,
-    setSide?: (partial: Partial<SideSelection>) => void,
-    onMachineChange?: () => void,
-    machines?: Array<{ name: string; info: Record<string, unknown> }>,
-  ): Promise<HTMLElement> {
-    mockGetMachines.mockResolvedValue({ items: machines ?? MACHINES, total: (machines ?? MACHINES).length });
-    const wrapper = createMachineCombobox('a', setSide ?? (() => {}), onMachineChange ?? (() => {}), ctx ?? makeMachineCtx());
-    document.body.append(wrapper);
-    await vi.advanceTimersByTimeAsync(0); // resolve fetch
-    return wrapper;
-  }
-
-  it('fetches full machine list once on creation', async () => {
-    mockGetMachines.mockResolvedValue({ items: MACHINES, total: 3 });
-    const ctx = makeMachineCtx();
-    const wrapper = createMachineCombobox('a', () => {}, () => {}, ctx);
-    document.body.append(wrapper);
-
-    expect(mockGetMachines).toHaveBeenCalledTimes(1);
-    expect(mockGetMachines).toHaveBeenCalledWith('nts', { limit: 500 });
-
-    wrapper.remove();
-  });
-
-  it('does not fetch when no suite is selected', () => {
-    mockGetMachines.mockResolvedValue({ items: [], total: 0 });
-    const ctx = makeMachineCtx({
-      getSuiteName: () => '',
-      getSideState: () => ({
-        selection: { suite: '', commit: '', machine: '', runs: [], runAgg: 'median' as const },
-        setSide: () => {},
-        label: 'Side A',
-      }),
-    });
-    const wrapper = createMachineCombobox('a', () => {}, () => {}, ctx);
-    document.body.append(wrapper);
-
-    expect(mockGetMachines).not.toHaveBeenCalled();
-
-    wrapper.remove();
-  });
-
-  it('filters locally by substring — no additional API calls', async () => {
-    const wrapper = await createAndLoad();
-    const input = wrapper.querySelector('input') as HTMLInputElement;
-
-    mockGetMachines.mockClear();
-    input.value = 'x86';
-    input.dispatchEvent(new Event('input'));
-
-    expect(mockGetMachines).not.toHaveBeenCalled();
-    const items = wrapper.querySelectorAll('li.combobox-item');
-    expect(items).toHaveLength(2);
-    expect(items[0].textContent).toBe('clang-x86');
-    expect(items[1].textContent).toBe('gcc-x86');
-
-    wrapper.remove();
-  });
-
-  it('shows combobox-invalid when no machines match', async () => {
-    const wrapper = await createAndLoad();
-    const input = wrapper.querySelector('input') as HTMLInputElement;
-
-    input.value = 'nonexistent';
-    input.dispatchEvent(new Event('input'));
-    expect(input.classList.contains('combobox-invalid')).toBe(true);
-
-    wrapper.remove();
-  });
-
-  it('removes combobox-invalid when machines match again', async () => {
-    const wrapper = await createAndLoad();
-    const input = wrapper.querySelector('input') as HTMLInputElement;
-
-    input.value = 'nonexistent';
-    input.dispatchEvent(new Event('input'));
-    expect(input.classList.contains('combobox-invalid')).toBe(true);
-
-    input.value = 'clang';
-    input.dispatchEvent(new Event('input'));
-    expect(input.classList.contains('combobox-invalid')).toBe(false);
-
-    wrapper.remove();
-  });
-
-  it('accepts on Enter when dropdown has items', async () => {
-    const onMachineChange = vi.fn();
-    const wrapper = await createAndLoad(undefined, undefined, onMachineChange);
-    const input = wrapper.querySelector('input') as HTMLInputElement;
-
-    input.value = 'clang';
-    input.dispatchEvent(new Event('input'));
-    input.value = 'clang-x86';
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-
-    // onMachineChange is called asynchronously via onMachineSelect
-    await vi.advanceTimersByTimeAsync(0);
-    expect(onMachineChange).toHaveBeenCalled();
-    expect(input.classList.contains('combobox-invalid')).toBe(false);
-
-    wrapper.remove();
-  });
-
-  it('does not accept on Enter when dropdown is empty', async () => {
-    const onMachineChange = vi.fn();
-    const wrapper = await createAndLoad(undefined, undefined, onMachineChange);
-    const input = wrapper.querySelector('input') as HTMLInputElement;
-
-    input.value = 'nonexistent';
-    input.dispatchEvent(new Event('input'));
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(onMachineChange).not.toHaveBeenCalled();
-    expect(input.classList.contains('combobox-invalid')).toBe(true);
-
-    wrapper.remove();
-  });
-
-  it('disables commit input when machine is cleared via change', async () => {
-    const sideA: SideSelection = { suite: 'nts', commit: '100', machine: 'clang-x86', runs: ['r1'], runAgg: 'median' };
-    const setSide = vi.fn((partial: Partial<SideSelection>) => Object.assign(sideA, partial));
-    const onMachineChange = vi.fn();
-    const ctx = makeMachineCtx({
-      getSideState: () => ({
-        selection: sideA,
-        setSide,
-        label: 'Side A',
-      }),
-    });
-
-    // Create machine combobox (fires pre-fetch for URL-restored machine)
-    mockGetMachines.mockResolvedValue({ items: MACHINES, total: MACHINES.length });
-    const wrapper = createMachineCombobox('a', setSide, onMachineChange, ctx);
-    document.body.append(wrapper);
-
-    // Create commit combobox (starts disabled since commits are loading)
-    const commitWrapper = createCommitCombobox('a', setSide, () => {}, ctx);
-    document.body.append(commitWrapper);
-    const commitInput = commitWrapper.querySelector('input')! as HTMLInputElement;
-    expect(commitInput.disabled).toBe(true); // loading commits
-
-    // Flush the pre-fetch promise — this enables the commit input
-    await vi.advanceTimersByTimeAsync(0);
-    expect(commitInput.disabled).toBe(false);
-
-    // Clear machine text and trigger change
-    const machineInput = wrapper.querySelector('input') as HTMLInputElement;
-    machineInput.value = '';
-    machineInput.dispatchEvent(new Event('change'));
-
-    expect(setSide).toHaveBeenCalledWith({ machine: '', commit: '', runs: [] });
-    expect(commitInput.disabled).toBe(true);
-    expect(commitInput.placeholder).toBe('Select a machine first');
-    expect(onMachineChange).toHaveBeenCalled();
-
-    wrapper.remove();
-    commitWrapper.remove();
-  });
-
-  it('disables machine input when no suite is selected', () => {
-    const sideA: SideSelection = { suite: '', commit: '', machine: '', runs: [], runAgg: 'median' };
-    const ctx = makeMachineCtx({
-      getSuiteName: () => '',
-      getSideState: () => ({
-        selection: sideA,
-        setSide: (partial: Partial<SideSelection>) => Object.assign(sideA, partial),
-        label: 'Side A',
-      }),
-    });
-    const wrapper = createMachineCombobox('a', () => {}, () => {}, ctx);
-    document.body.append(wrapper);
-
-    const input = wrapper.querySelector('input') as HTMLInputElement;
-    expect(input.disabled).toBe(true);
-    expect(input.placeholder).toBe('Select a suite first');
-
-    wrapper.remove();
-  });
-
-  it('shows "Loading machines..." before fetch resolves', () => {
-    mockGetMachines.mockReturnValue(new Promise(() => {})); // never resolves
-    const ctx = makeMachineCtx();
-    const wrapper = createMachineCombobox('a', () => {}, () => {}, ctx);
-    document.body.append(wrapper);
-
-    const input = wrapper.querySelector('input') as HTMLInputElement;
-    input.dispatchEvent(new Event('focus'));
-
-    const items = wrapper.querySelectorAll('li');
-    expect(items.length).toBe(1);
-    expect(items[0].textContent).toBe('Loading machines...');
-
-    wrapper.remove();
   });
 });
 

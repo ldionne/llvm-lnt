@@ -10,8 +10,10 @@ vi.mock('../../api', async (importOriginal) => {
     getFields: vi.fn(),
     getProfilesForRun: vi.fn(),
     deleteRun: vi.fn(),
-    fetchOneCursorPage: vi.fn(),
+    postOneCursorPage: vi.fn(),
     apiUrl: vi.fn(),
+    getTestSuiteInfoCached: vi.fn(),
+    getCommit: vi.fn(),
   };
 });
 
@@ -34,7 +36,7 @@ vi.mock('../../router', async (importOriginal) => {
   Fx: { hover: vi.fn(), unhover: vi.fn() },
 };
 
-import { getRun, getFields, getProfilesForRun, fetchOneCursorPage, apiUrl } from '../../api';
+import { getRun, getFields, getProfilesForRun, postOneCursorPage, apiUrl, getTestSuiteInfoCached, getCommit } from '../../api';
 import { runDetailPage } from '../../pages/run-detail';
 import type { RunDetail, FieldInfo, SampleInfo } from '../../types';
 
@@ -42,7 +44,6 @@ const TEST_UUID = 'abcdef01-2345-6789-abcd-ef0123456789';
 
 const mockRun: RunDetail = {
   uuid: TEST_UUID,
-  machine: 'clang-x86',
   commit: '100',
   submitted_at: '2026-01-01T10:00:00Z',
   run_parameters: { compiler: 'clang-18', opt_level: '-O2' },
@@ -70,10 +71,17 @@ describe('runDetailPage', () => {
     (getRun as ReturnType<typeof vi.fn>).mockResolvedValue(mockRun);
     (getFields as ReturnType<typeof vi.fn>).mockResolvedValue(mockFields);
     (getProfilesForRun as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    (apiUrl as ReturnType<typeof vi.fn>).mockReturnValue(`/api/v5/nts/runs/${TEST_UUID}/samples`);
-    (fetchOneCursorPage as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (apiUrl as ReturnType<typeof vi.fn>).mockReturnValue(`/api/v5/nts/samples`);
+    (postOneCursorPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       items: mockSamples,
       nextCursor: null,
+    });
+    (getTestSuiteInfoCached as ReturnType<typeof vi.fn>).mockResolvedValue({
+      name: 'nts', schema: { metrics: mockFields, commit_fields: [] },
+    });
+    (getCommit as ReturnType<typeof vi.fn>).mockResolvedValue({
+      commit: '100', ordinal: 1, tag: null, fields: {},
+      previous_commit: null, next_commit: null,
     });
   });
 
@@ -95,7 +103,7 @@ describe('runDetailPage', () => {
     expect(getFields).toHaveBeenCalledWith('nts');
   });
 
-  it('renders metadata with UUID, Machine, Commit, Submitted, parameters', async () => {
+  it('renders metadata with UUID, Commit, Submitted, parameters', async () => {
     runDetailPage.mount(container, { testsuite: 'nts', uuid: TEST_UUID });
 
     await vi.waitFor(() => {
@@ -103,7 +111,6 @@ describe('runDetailPage', () => {
       expect(dl).toBeTruthy();
       expect(dl!.textContent).toContain('UUID');
       expect(dl!.textContent).toContain(TEST_UUID);
-      expect(dl!.textContent).toContain('Machine');
       expect(dl!.textContent).toContain('Commit');
       expect(dl!.textContent).toContain('Submitted');
       expect(dl!.textContent).toContain('compiler');
@@ -113,35 +120,30 @@ describe('runDetailPage', () => {
     });
   });
 
-  it('Machine and Commit render as SPA links with suite-scoped hrefs', async () => {
+  it('Commit renders as SPA link with suite-scoped href', async () => {
     runDetailPage.mount(container, { testsuite: 'nts', uuid: TEST_UUID });
 
     await vi.waitFor(() => {
-      const machineLink = container.querySelector('a[href*="/machines/clang-x86"]') as HTMLAnchorElement;
-      expect(machineLink).toBeTruthy();
-      expect(machineLink.textContent).toBe('clang-x86');
-      expect(machineLink.href).toContain('/v5/nts/machines/clang-x86');
-
       const commitLink = container.querySelector('a[href*="/commits/100"]') as HTMLAnchorElement;
       expect(commitLink).toBeTruthy();
       expect(commitLink.href).toContain('/v5/nts/commits/100');
     });
   });
 
-  it('renders "Compare with…" as agnostic link with suite_a param', async () => {
+  it('renders "Compare with..." as agnostic link with suite_a and params_a', async () => {
     runDetailPage.mount(container, { testsuite: 'nts', uuid: TEST_UUID });
 
     await vi.waitFor(() => {
-      const link = container.querySelector('.action-links a') as HTMLAnchorElement;
+      const link = container.querySelector('.action-link') as HTMLAnchorElement;
       expect(link).toBeTruthy();
       expect(link.textContent).toContain('Compare with');
       const href = link.getAttribute('href')!;
       // Must be a suite-agnostic URL (not suite-scoped)
       expect(href).toMatch(/^\/v5\/compare\?/);
       expect(href).not.toContain('/v5/nts/compare');
-      // Must include suite_a param
+      // Must include suite_a and params_a
       expect(href).toContain('suite_a=nts');
-      expect(href).toContain('machine_a=clang-x86');
+      expect(href).toContain('params_a=');
       expect(href).toContain('commit_a=100');
       expect(href).toContain(`runs_a=${encodeURIComponent(TEST_UUID)}`);
     });
@@ -170,31 +172,31 @@ describe('runDetailPage', () => {
     });
   });
 
-  it('progressive loading: calls fetchOneCursorPage with limit=2000', async () => {
+  it('progressive loading: calls postOneCursorPage with limit=2000', async () => {
     runDetailPage.mount(container, { testsuite: 'nts', uuid: TEST_UUID });
 
     await vi.waitFor(() => {
-      expect(fetchOneCursorPage).toHaveBeenCalledWith(
+      expect(postOneCursorPage).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ limit: '2000' }),
+        expect.objectContaining({ limit: 2000, run: TEST_UUID }),
         expect.any(AbortSignal),
       );
     });
   });
 
   it('progressive loading fetches next page when cursor present', async () => {
-    (fetchOneCursorPage as ReturnType<typeof vi.fn>)
+    (postOneCursorPage as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce({ items: mockSamples.slice(0, 2), nextCursor: 'page2' })
       .mockResolvedValueOnce({ items: mockSamples.slice(2), nextCursor: null });
 
     runDetailPage.mount(container, { testsuite: 'nts', uuid: TEST_UUID });
 
     await vi.waitFor(() => {
-      expect(fetchOneCursorPage).toHaveBeenCalledTimes(2);
+      expect(postOneCursorPage).toHaveBeenCalledTimes(2);
       // Second call includes cursor
-      expect(fetchOneCursorPage).toHaveBeenCalledWith(
+      expect(postOneCursorPage).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ limit: '2000', cursor: 'page2' }),
+        expect.objectContaining({ limit: 2000, cursor: 'page2' }),
         expect.any(AbortSignal),
       );
     });
@@ -237,7 +239,7 @@ describe('runDetailPage', () => {
   });
 
   it('shows error banner when sample loading fails (non-abort)', async () => {
-    (fetchOneCursorPage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Server error'));
+    (postOneCursorPage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Server error'));
 
     runDetailPage.mount(container, { testsuite: 'nts', uuid: TEST_UUID });
 

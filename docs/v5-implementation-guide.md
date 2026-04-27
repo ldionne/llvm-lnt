@@ -105,9 +105,9 @@ absent from present, and (3) the DB layer uses the `_UNSET` sentinel
 one of these layers causes `null` values to be silently ignored.
 
 **Machine/test delete and RegressionIndicators.** `RegressionIndicator` has
-`machine_id` and `test_id` FKs with no `ondelete=CASCADE` (intentional --
+`run_id` and `test_id` FKs with no `ondelete=CASCADE` (intentional --
 regressions are triage artifacts that should not vanish when underlying
-entities change). The machine and test delete handlers must manually delete
+entities change). The run and test delete handlers must manually delete
 indicators referencing the entity before deleting it, or the FK constraint
 will block the delete.
 
@@ -157,7 +157,7 @@ plain clicks for SPA navigation (no full page reload).
 between pages, not between individual setting changes within a page.
 
 **Component catalog.** Reusable components shared across pages:
-`data-table`, `pagination`, `machine-combobox`, `metric-selector`,
+`data-table`, `pagination`, `search-chips`, `metric-selector`,
 `commit-search`, `sparkline-card`, `time-series-chart`, `delete-confirm`.
 
 **Text filter utility.** All client-side text filters use the shared

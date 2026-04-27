@@ -6,6 +6,7 @@ import type { GraphState } from '../../../pages/graph/state';
 function makeDefault(): GraphState {
   return {
     suite: '',
+    traces: [],
     machines: [],
     metric: '',
     testFilter: '',
@@ -31,19 +32,24 @@ describe('decodeGraphState', () => {
     expect(state.metric).toBe('exec_time');
   });
 
-  it('parses single machine', () => {
+  it('parses single trace', () => {
+    const state = decodeGraphState('?trace=compiler:clang');
+    expect(state.traces).toEqual([{ compiler: 'clang' }]);
+  });
+
+  it('parses multiple traces (repeated param)', () => {
+    const state = decodeGraphState('?trace=compiler:clang&trace=os:linux&trace=arch:x86');
+    expect(state.traces).toEqual([{ compiler: 'clang' }, { os: 'linux' }, { arch: 'x86' }]);
+  });
+
+  it('filters empty trace values', () => {
+    const state = decodeGraphState('?trace=compiler:clang&trace=&trace=os:linux');
+    expect(state.traces).toEqual([{ compiler: 'clang' }, { os: 'linux' }]);
+  });
+
+  it('parses legacy machine param', () => {
     const state = decodeGraphState('?machine=host1');
     expect(state.machines).toEqual(['host1']);
-  });
-
-  it('parses multiple machines (repeated param)', () => {
-    const state = decodeGraphState('?machine=host1&machine=host2&machine=host3');
-    expect(state.machines).toEqual(['host1', 'host2', 'host3']);
-  });
-
-  it('filters empty machine values', () => {
-    const state = decodeGraphState('?machine=host1&machine=&machine=host2');
-    expect(state.machines).toEqual(['host1', 'host2']);
   });
 
   it('parses test_filter', () => {
@@ -64,27 +70,34 @@ describe('decodeGraphState', () => {
   });
 
   it('parses single baseline', () => {
-    const state = decodeGraphState('?baseline=nts::machine1::abc123');
+    const state = decodeGraphState('?baseline=nts::compiler:clang::abc123');
     expect(state.baselines).toEqual([
-      { suite: 'nts', machine: 'machine1', commit: 'abc123' },
+      { suite: 'nts', params: { compiler: 'clang' }, commit: 'abc123' },
     ]);
   });
 
   it('parses multiple baselines', () => {
     const state = decodeGraphState(
-      '?baseline=nts::m1::c1&baseline=other::m2::c2',
+      '?baseline=nts::compiler:clang::c1&baseline=other::os:linux::c2',
     );
     expect(state.baselines).toHaveLength(2);
-    expect(state.baselines[0]).toEqual({ suite: 'nts', machine: 'm1', commit: 'c1' });
-    expect(state.baselines[1]).toEqual({ suite: 'other', machine: 'm2', commit: 'c2' });
+    expect(state.baselines[0]).toEqual({ suite: 'nts', params: { compiler: 'clang' }, commit: 'c1' });
+    expect(state.baselines[1]).toEqual({ suite: 'other', params: { os: 'linux' }, commit: 'c2' });
   });
 
   it('skips malformed baselines', () => {
     const state = decodeGraphState(
-      '?baseline=nts::m1::c1&baseline=bad_format&baseline=::m2::',
+      '?baseline=nts::compiler:clang::c1&baseline=bad_format&baseline=::::',
     );
     expect(state.baselines).toHaveLength(1);
-    expect(state.baselines[0]).toEqual({ suite: 'nts', machine: 'm1', commit: 'c1' });
+    expect(state.baselines[0]).toEqual({ suite: 'nts', params: { compiler: 'clang' }, commit: 'c1' });
+  });
+
+  it('parses baseline with empty params', () => {
+    const state = decodeGraphState('?baseline=nts::::abc123');
+    expect(state.baselines).toEqual([
+      { suite: 'nts', params: {}, commit: 'abc123' },
+    ]);
   });
 
   it('parses regressionMode', () => {
@@ -99,16 +112,16 @@ describe('decodeGraphState', () => {
 
   it('parses a full URL with all params', () => {
     const state = decodeGraphState(
-      '?suite=nts&machine=m1&machine=m2&metric=exec_time&test_filter=bench' +
-      '&run_agg=mean&sample_agg=min&baseline=nts::m1::c1&regressions=active',
+      '?suite=nts&trace=compiler:clang&trace=os:linux&metric=exec_time&test_filter=bench' +
+      '&run_agg=mean&sample_agg=min&baseline=nts::compiler:clang::c1&regressions=active',
     );
     expect(state.suite).toBe('nts');
-    expect(state.machines).toEqual(['m1', 'm2']);
+    expect(state.traces).toEqual([{ compiler: 'clang' }, { os: 'linux' }]);
     expect(state.metric).toBe('exec_time');
     expect(state.testFilter).toBe('bench');
     expect(state.runAgg).toBe('mean');
     expect(state.sampleAgg).toBe('min');
-    expect(state.baselines).toEqual([{ suite: 'nts', machine: 'm1', commit: 'c1' }]);
+    expect(state.baselines).toEqual([{ suite: 'nts', params: { compiler: 'clang' }, commit: 'c1' }]);
     expect(state.regressionMode).toBe('active');
   });
 });
@@ -125,11 +138,11 @@ describe('encodeGraphState', () => {
     expect(search).toContain('metric=exec_time');
   });
 
-  it('encodes multiple machines', () => {
-    const state = { ...makeDefault(), machines: ['m1', 'm2'] };
+  it('encodes multiple traces', () => {
+    const state = { ...makeDefault(), traces: [{ compiler: 'clang' }, { os: 'linux' }] };
     const search = encodeGraphState(state);
-    expect(search).toContain('machine=m1');
-    expect(search).toContain('machine=m2');
+    expect(search).toContain('trace=compiler%3Aclang');
+    expect(search).toContain('trace=os%3Alinux');
   });
 
   it('omits default aggregation', () => {
@@ -162,13 +175,13 @@ describe('encodeGraphState', () => {
     const state = {
       ...makeDefault(),
       baselines: [
-        { suite: 'nts', machine: 'm1', commit: 'c1' },
-        { suite: 'other', machine: 'm2', commit: 'c2' },
+        { suite: 'nts', params: { compiler: 'clang' }, commit: 'c1' },
+        { suite: 'other', params: { os: 'linux' }, commit: 'c2' },
       ],
     };
     const search = encodeGraphState(state);
-    expect(search).toContain('baseline=nts%3A%3Am1%3A%3Ac1');
-    expect(search).toContain('baseline=other%3A%3Am2%3A%3Ac2');
+    expect(search).toContain('baseline=nts%3A%3Acompiler%3Aclang%3A%3Ac1');
+    expect(search).toContain('baseline=other%3A%3Aos%3Alinux%3A%3Ac2');
   });
 
   it('omits empty suite and metric', () => {
@@ -182,12 +195,13 @@ describe('encode/decode round-trip', () => {
   it('round-trips a full state', () => {
     const original: GraphState = {
       suite: 'nts',
-      machines: ['m1', 'm2'],
+      traces: [{ compiler: 'clang' }, { os: 'linux' }],
+      machines: [],
       metric: 'exec_time',
       testFilter: 'bench',
       runAgg: 'mean',
       sampleAgg: 'min',
-      baselines: [{ suite: 'nts', machine: 'm1', commit: 'c1' }],
+      baselines: [{ suite: 'nts', params: { compiler: 'clang' }, commit: 'c1' }],
       regressionMode: 'active',
     };
     const encoded = encodeGraphState(original);

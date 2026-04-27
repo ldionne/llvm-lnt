@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { setApiBase, getFields, getCommits, getMachines, getRuns, getSamples,
-  getMachine, getMachineRuns, deleteMachine, getRun, deleteRun, getCommit, getRunsByCommit,
+import { setApiBase, getFields, getCommits, getRuns, getSamples,
+  getRun, deleteRun, getCommit, getRunsByCommit,
   getFieldChanges, searchCommits, updateCommit, fetchTrends,
   fetchOneCursorPage, apiUrl, ApiError, authErrorMessage,
   resolveCommits, getTestSuiteInfoCached, _clearSuiteInfoCache,
   getProfilesForRun, getProfileMetadata, getProfileFunctions, getProfileFunctionDetail,
+  getRunParameters, getRunParameterValues,
 } from '../api';
 import type {
-  CursorPaginated, FieldInfo, MachineInfo, MachineRunInfo, OffsetPaginated,
+  CursorPaginated, FieldInfo,
   CommitSummary, CommitDetail, RunInfo, RunDetail, SampleInfo, FieldChangeInfo,
   QueryDataPoint, ProfileListItem, ProfileMetadata, ProfileFunctionInfo, ProfileFunctionDetail,
 } from '../types';
@@ -20,13 +21,9 @@ function cursorPage<T>(items: T[], next: string | null = null): CursorPaginated<
   return { items, cursor: { next, previous: null } };
 }
 
-function offsetPage<T>(items: T[], total: number): OffsetPaginated<T> {
-  return { items, total, cursor: { next: null, previous: null } };
-}
-
 /** Build a minimal TestSuiteInfo mock response for getFields tests. */
 function suiteInfoResponse(metrics: FieldInfo[] = []) {
-  return { name: 'nts', schema: { metrics, commit_fields: [], machine_fields: [] } };
+  return { name: 'nts', schema: { metrics, commit_fields: [] } };
 }
 
 // ---------------------------------------------------------------------------
@@ -223,10 +220,10 @@ describe('error formatting', () => {
 describe('AbortSignal support', () => {
   it('passes signal to fetch for non-paginated requests', async () => {
     const controller = new AbortController();
-    const machine: MachineInfo = { name: 'clang-x86', info: {} };
-    mockFetch.mockResolvedValueOnce(mockResponse(machine));
+    const run: RunDetail = { uuid: 'abc-123', commit: '100', submitted_at: null, run_parameters: {} };
+    mockFetch.mockResolvedValueOnce(mockResponse(run));
 
-    await getMachine('nts', 'clang-x86', controller.signal);
+    await getRun('nts', 'abc-123', controller.signal);
 
     expect(mockFetch.mock.calls[0][1].signal).toBe(controller.signal);
   });
@@ -380,87 +377,22 @@ describe('getCommits', () => {
     expect(url.searchParams.get('limit')).toBe('10000');
   });
 
-  it('passes machine query parameter when provided', async () => {
+  it('passes params as param.X query parameters when provided', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
 
-    await getCommits('nts', { machine: 'clang-x86' });
+    await getCommits('nts', { params: { compiler: 'clang' } });
 
     const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.get('machine')).toBe('clang-x86');
+    expect(url.searchParams.get('param.compiler')).toBe('clang');
   });
 
-  it('does not include machine param when not provided', async () => {
+  it('does not include param query when not provided', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
 
     await getCommits('nts');
 
     const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.has('machine')).toBe(false);
-  });
-});
-
-// ===========================================================================
-// getMachines
-// ===========================================================================
-
-describe('getMachines', () => {
-  it('returns items and total from offset-paginated response', async () => {
-    const machines: MachineInfo[] = [
-      { name: 'machine-1', info: { os: 'linux' } },
-      { name: 'machine-2', info: { os: 'darwin' } },
-    ];
-    mockFetch.mockResolvedValueOnce(mockResponse(offsetPage(machines, 42)));
-
-    const result = await getMachines('nts', {});
-
-    expect(result.items).toEqual(machines);
-    expect(result.total).toBe(42);
-  });
-
-  it('passes search as search query param', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse(offsetPage([], 0)));
-
-    await getMachines('nts', { search: 'clang-' });
-
-    const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.get('search')).toBe('clang-');
-  });
-
-  it('passes limit query param', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse(offsetPage([], 0)));
-
-    await getMachines('nts', { limit: 10 });
-
-    const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.get('limit')).toBe('10');
-  });
-
-  it('omits search and limit when not provided', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse(offsetPage([], 0)));
-
-    await getMachines('nts', {});
-
-    const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.has('search')).toBe(false);
-    expect(url.searchParams.has('limit')).toBe(false);
-  });
-
-  it('constructs the correct URL path', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse(offsetPage([], 0)));
-
-    await getMachines('nts', {});
-
-    const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.pathname).toBe('/api/v5/nts/machines');
-  });
-
-  it('passes offset query param', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse(offsetPage([], 0)));
-
-    await getMachines('nts', { offset: 25 });
-
-    const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.get('offset')).toBe('25');
+    expect(url.searchParams.has('param.compiler')).toBe(false);
   });
 });
 
@@ -472,14 +404,12 @@ describe('getRuns', () => {
   it('returns all runs across paginated responses', async () => {
     const r1: RunInfo = {
       uuid: 'aaa-111',
-      machine: 'machine-1',
       commit: '100',
       submitted_at: '2025-01-01T00:00:00Z',
       run_parameters: {},
     };
     const r2: RunInfo = {
       uuid: 'bbb-222',
-      machine: 'machine-1',
       commit: '200',
       submitted_at: null,
       run_parameters: {},
@@ -489,17 +419,17 @@ describe('getRuns', () => {
       .mockResolvedValueOnce(mockResponse(cursorPage([r1], 'next-c')))
       .mockResolvedValueOnce(mockResponse(cursorPage([r2])));
 
-    const result = await getRuns('nts', { machine: 'machine-1' });
+    const result = await getRuns('nts', { params: { compiler: 'clang' } });
     expect(result).toEqual([r1, r2]);
   });
 
-  it('passes machine and commit as query params', async () => {
+  it('passes params and commit as query params', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
 
-    await getRuns('nts', { machine: 'machine-1', commit: 'rev100' });
+    await getRuns('nts', { params: { compiler: 'clang' }, commit: 'rev100' });
 
     const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.get('machine')).toBe('machine-1');
+    expect(url.searchParams.get('param.compiler')).toBe('clang');
     expect(url.searchParams.get('commit')).toBe('rev100');
     expect(url.searchParams.get('limit')).toBe('10000');
   });
@@ -507,7 +437,7 @@ describe('getRuns', () => {
   it('omits commit when not provided', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
 
-    await getRuns('nts', { machine: 'machine-1' });
+    await getRuns('nts', { params: { compiler: 'clang' } });
 
     const url = new URL(mockFetch.mock.calls[0][0]);
     expect(url.searchParams.has('commit')).toBe(false);
@@ -516,7 +446,7 @@ describe('getRuns', () => {
   it('constructs the correct URL path', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
 
-    await getRuns('nts', { machine: 'machine-1' });
+    await getRuns('nts', { params: { compiler: 'clang' } });
 
     const url = new URL(mockFetch.mock.calls[0][0]);
     expect(url.pathname).toBe('/api/v5/nts/runs');
@@ -540,13 +470,18 @@ describe('getSamples', () => {
     expect(result).toEqual([s1, s2]);
   });
 
-  it('constructs URL with encoded run UUID', async () => {
+  it('constructs URL for POST to samples endpoint', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
 
-    await getSamples('nts', 'abc-def/special');
+    await getSamples('nts', 'abc-def');
 
     const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.pathname).toBe('/api/v5/nts/runs/abc-def%2Fspecial/samples');
+    expect(url.pathname).toBe('/api/v5/nts/samples');
+    // Body should contain run UUID
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe('POST');
+    const body = JSON.parse(init.body as string);
+    expect(body.run).toBe('abc-def');
   });
 
   it('calls onProgress with running total', async () => {
@@ -603,17 +538,13 @@ describe('URL construction', () => {
     await getCommits('nts');
     expect(new URL(mockFetch.mock.calls[1][0]).pathname).toBe('/myapp/api/v5/nts/commits');
 
-    mockFetch.mockResolvedValueOnce(mockResponse(offsetPage([], 0)));
-    await getMachines('nts', {});
-    expect(new URL(mockFetch.mock.calls[2][0]).pathname).toBe('/myapp/api/v5/nts/machines');
-
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
-    await getRuns('nts', { machine: 'm' });
-    expect(new URL(mockFetch.mock.calls[3][0]).pathname).toBe('/myapp/api/v5/nts/runs');
+    await getRuns('nts', {});
+    expect(new URL(mockFetch.mock.calls[2][0]).pathname).toBe('/myapp/api/v5/nts/runs');
 
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
     await getSamples('nts', 'uuid-1');
-    expect(new URL(mockFetch.mock.calls[4][0]).pathname).toBe('/myapp/api/v5/nts/runs/uuid-1/samples');
+    expect(new URL(mockFetch.mock.calls[3][0]).pathname).toBe('/myapp/api/v5/nts/samples');
   });
 });
 
@@ -623,111 +554,51 @@ describe('URL construction', () => {
 
 describe('query parameter handling', () => {
   it('omits empty string params', async () => {
-    // getRuns with empty commit should not include it
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
 
-    await getRuns('nts', { machine: 'machine-1', commit: '' });
+    await getRuns('nts', { params: { compiler: 'clang' }, commit: '' });
 
     const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.get('machine')).toBe('machine-1');
-    // commit is '' and should be excluded by the fetchJson params filtering
-    // (but actually getRuns conditionally adds commit, so let's test via getMachines)
+    expect(url.searchParams.get('param.compiler')).toBe('clang');
     expect(url.searchParams.has('commit')).toBe(false);
   });
 });
 
 // ===========================================================================
-// Phase 2: New API functions
+// getRunParameters / getRunParameterValues
 // ===========================================================================
 
-describe('getMachine', () => {
-  it('fetches a single machine by name', async () => {
-    const machine: MachineInfo = { name: 'clang-x86', info: { os: 'linux' } };
-    mockFetch.mockResolvedValueOnce(mockResponse(machine));
+describe('getRunParameters', () => {
+  it('fetches parameter keys', async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ items: [{ key: 'compiler' }, { key: 'os' }] }));
 
-    const result = await getMachine('nts', 'clang-x86');
+    const result = await getRunParameters('nts');
 
-    expect(result).toEqual(machine);
+    expect(result.items).toEqual([{ key: 'compiler' }, { key: 'os' }]);
     const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.pathname).toBe('/api/v5/nts/machines/clang-x86');
+    expect(url.pathname).toBe('/api/v5/nts/run-parameters');
   });
 
-  it('encodes machine name in URL', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse({ name: 'a/b', info: {} }));
-    await getMachine('nts', 'a/b');
+  it('passes search and limit params', async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ items: [] }));
+
+    await getRunParameters('nts', { search: 'comp', limit: 10 });
+
     const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.pathname).toBe('/api/v5/nts/machines/a%2Fb');
-  });
-});
-
-describe('getMachineRuns', () => {
-  it('fetches runs for a machine with sort and limit', async () => {
-    const page = cursorPage<MachineRunInfo>(
-      [{ uuid: 'r1', commit: '100', submitted_at: null }],
-      'cursor-2',
-    );
-    mockFetch.mockResolvedValueOnce(mockResponse(page));
-
-    const result = await getMachineRuns('nts', 'clang-x86', { sort: '-submitted_at', limit: 10 });
-
-    expect(result.items).toHaveLength(1);
-    expect(result.cursor.next).toBe('cursor-2');
-    const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.pathname).toBe('/api/v5/nts/machines/clang-x86/runs');
-    expect(url.searchParams.get('sort')).toBe('-submitted_at');
+    expect(url.searchParams.get('search')).toBe('comp');
     expect(url.searchParams.get('limit')).toBe('10');
   });
-
-  it('passes cursor query param for pagination', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse(cursorPage<MachineRunInfo>([], null)));
-
-    await getMachineRuns('nts', 'clang-x86', { cursor: 'abc123' });
-
-    const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.get('cursor')).toBe('abc123');
-  });
 });
 
-describe('deleteMachine', () => {
-  it('sends DELETE request to correct URL', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse('', 204));
+describe('getRunParameterValues', () => {
+  it('fetches values for a parameter key', async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ items: [{ value: 'clang' }, { value: 'gcc' }] }));
 
-    await deleteMachine('nts', 'clang-x86');
+    const result = await getRunParameterValues('nts', 'compiler');
 
-    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(result.items).toEqual([{ value: 'clang' }, { value: 'gcc' }]);
     const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.pathname).toBe('/api/v5/nts/machines/clang-x86');
-    expect(mockFetch.mock.calls[0][1].method).toBe('DELETE');
-  });
-
-  it('encodes machine name in URL', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse('', 204));
-
-    await deleteMachine('nts', 'machine with spaces');
-
-    const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.pathname).toBe('/api/v5/nts/machines/machine%20with%20spaces');
-  });
-
-  it('sends auth token when set', async () => {
-    storedToken = 'my-token';
-    mockFetch.mockResolvedValueOnce(mockResponse('', 204));
-
-    await deleteMachine('nts', 'clang-x86');
-
-    expect(mockFetch.mock.calls[0][1].headers['Authorization']).toBe('Bearer my-token');
-  });
-
-  it('throws ApiError on 403', async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse('Forbidden', 403, 'Forbidden'));
-
-    try {
-      await deleteMachine('nts', 'clang-x86');
-      expect.fail('should have thrown');
-    } catch (e) {
-      expect(e).toBeInstanceOf(ApiError);
-      expect((e as ApiError).status).toBe(403);
-    }
+    expect(url.pathname).toBe('/api/v5/nts/run-parameters/compiler/values');
   });
 });
 
@@ -752,7 +623,7 @@ describe('ApiError and authErrorMessage', () => {
 describe('getRun', () => {
   it('fetches a single run by UUID', async () => {
     const run: RunDetail = {
-      uuid: 'abc-123', machine: 'm1', commit: '100',
+      uuid: 'abc-123', commit: '100',
       submitted_at: '2025-01-01T00:00:00Z', run_parameters: {},
     };
     mockFetch.mockResolvedValueOnce(mockResponse(run));
@@ -811,7 +682,7 @@ describe('getCommit', () => {
 describe('getRunsByCommit', () => {
   it('auto-paginates runs filtered by commit value', async () => {
     const run: RunInfo = {
-      uuid: 'r1', machine: 'm1', commit: '100',
+      uuid: 'r1', commit: '100',
       submitted_at: null, run_parameters: {},
     };
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([run])));
@@ -827,7 +698,7 @@ describe('getRunsByCommit', () => {
 describe('getFieldChanges', () => {
   it('fetches field changes with limit', async () => {
     const fc: FieldChangeInfo = {
-      uuid: 'fc1', test: 't1', machine: 'm1', metric: 'compile_time',
+      uuid: 'fc1', test: 't1', metric: 'compile_time',
       old_value: 1.0, new_value: 2.0, start_commit: '99', end_commit: '100',
     };
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([fc])));
@@ -906,7 +777,7 @@ describe('apiUrl', () => {
 
   it('includes apiBase prefix', () => {
     setApiBase('/lnt');
-    expect(apiUrl('nts', 'machines')).toBe('/lnt/api/v5/nts/machines');
+    expect(apiUrl('nts', 'runs')).toBe('/lnt/api/v5/nts/runs');
   });
 
   it('encodes special characters in test suite name', () => {
@@ -922,13 +793,13 @@ describe('apiUrl', () => {
 describe('fetchOneCursorPage', () => {
   it('returns items and nextCursor from a single page', async () => {
     const pt: QueryDataPoint = {
-      test: 't1', machine: 'm1', metric: 'exec_time', value: 1.0,
+      test: 't1', metric: 'exec_time', value: 1.0,
       commit: '100', ordinal: 1, tag: null, run_uuid: 'r1', submitted_at: null,
     };
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([pt], 'next-abc')));
 
     const result = await fetchOneCursorPage<QueryDataPoint>(
-      '/api/v5/nts/query', { machine: 'm1', limit: '10000' },
+      '/api/v5/nts/query', { limit: '10000' },
     );
 
     expect(result.items).toEqual([pt]);
@@ -956,11 +827,10 @@ describe('fetchOneCursorPage', () => {
     mockFetch.mockResolvedValueOnce(mockResponse(cursorPage([])));
 
     await fetchOneCursorPage('/api/v5/nts/query', {
-      machine: 'm1', metric: 'exec_time', sort: '-commit', limit: '10000', cursor: 'abc',
+      metric: 'exec_time', sort: '-commit', limit: '10000', cursor: 'abc',
     });
 
     const url = new URL(mockFetch.mock.calls[0][0]);
-    expect(url.searchParams.get('machine')).toBe('m1');
     expect(url.searchParams.get('metric')).toBe('exec_time');
     expect(url.searchParams.get('sort')).toBe('-commit');
     expect(url.searchParams.get('limit')).toBe('10000');
@@ -973,13 +843,13 @@ describe('fetchOneCursorPage', () => {
 // ===========================================================================
 
 describe('fetchTrends', () => {
-  it('sends POST with JSON body containing metric, machine list, and last_n', async () => {
+  it('sends POST with JSON body containing metric, params, and last_n', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse({
       metric: 'exec_time',
-      items: [{ machine: 'm1', commit: '100', ordinal: 1, submitted_at: '2025-01-01T00:00:00Z', value: 42.0 }],
+      items: [{ commit: '100', ordinal: 1, submitted_at: '2025-01-01T00:00:00Z', value: 42.0, tag: null }],
     }));
 
-    const result = await fetchTrends('nts', { metric: 'exec_time', machine: ['m1', 'm2'], lastN: 100 });
+    const result = await fetchTrends('nts', { metric: 'exec_time', params: { compiler: 'clang' }, lastN: 100 });
 
     expect(result).toHaveLength(1);
     const url = new URL(mockFetch.mock.calls[0][0]);
@@ -988,11 +858,11 @@ describe('fetchTrends', () => {
     expect(init.method).toBe('POST');
     const body = JSON.parse(init.body as string);
     expect(body.metric).toBe('exec_time');
-    expect(body.machine).toEqual(['m1', 'm2']);
+    expect(body.params).toEqual({ compiler: 'clang' });
     expect(body.last_n).toBe(100);
   });
 
-  it('omits machine and last_n when not provided', async () => {
+  it('omits params and last_n when not provided', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse({ metric: 'exec_time', items: [] }));
 
     await fetchTrends('nts', { metric: 'exec_time' });
@@ -1000,7 +870,7 @@ describe('fetchTrends', () => {
     const init = mockFetch.mock.calls[0][1] as RequestInit;
     const body = JSON.parse(init.body as string);
     expect(body.metric).toBe('exec_time');
-    expect(body.machine).toBeUndefined();
+    expect(body.params).toBeUndefined();
     expect(body.last_n).toBeUndefined();
   });
 });
@@ -1055,7 +925,7 @@ describe('resolveCommits', () => {
 // ---------------------------------------------------------------------------
 
 describe('getTestSuiteInfoCached', () => {
-  const suiteInfo = { name: 'cached-suite', schema: { metrics: [], commit_fields: [], machine_fields: [] } };
+  const suiteInfo = { name: 'cached-suite', schema: { metrics: [], commit_fields: [] } };
 
   it('fetches on first call and returns data', async () => {
     mockFetch.mockResolvedValueOnce(mockResponse(suiteInfo));

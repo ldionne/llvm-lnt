@@ -11,10 +11,9 @@ declare const Plotly: {
   purge(el: HTMLElement): void;
 };
 
-export { machineColor } from '../utils';
-
 export interface SparklineTrace {
-  machine: string;
+  /** Display label for this trace (e.g. parameter query summary). */
+  label: string;
   color: string;
   points: Array<{ x: number; value: number; commit: string }>;
 }
@@ -23,9 +22,9 @@ export interface SparklineCardOptions {
   title: string;
   unit?: string;
   traces: SparklineTrace[];
-  /** Called on click. If a specific trace was clicked, `machine` is its name;
-   *  otherwise (card background / title click) `machine` is undefined. */
-  onClick?: (machine?: string) => void;
+  /** Called on click. If a specific trace was clicked, `label` is its display label;
+   *  otherwise (card background / title click) `label` is undefined. */
+  onClick?: (label?: string) => void;
 }
 
 function formatLabel(title: string, unit?: string): string {
@@ -67,7 +66,7 @@ export function createSparklineCard(options: SparklineCardOptions): {
     mode: 'lines',
     line: { color: trace.color, width: 1.5 },
     hovertemplate:
-      `<b>${trace.machine}</b><br>` +
+      `<b>${trace.label}</b><br>` +
       'Commit: %{text}<br>' +
       'Value: %{y:.4g}<extra></extra>',
   }));
@@ -91,10 +90,10 @@ export function createSparklineCard(options: SparklineCardOptions): {
         if (options.onClick) {
           const handler = options.onClick;
           gd.on('plotly_click', (eventData) => {
-            const machine = options.traces[eventData.points[0]?.curveNumber]?.machine;
-            if (machine) {
+            const traceLabel = options.traces[eventData.points[0]?.curveNumber]?.label;
+            if (traceLabel) {
               traceClicked = true;
-              handler(machine);
+              handler(traceLabel);
             }
           });
         }

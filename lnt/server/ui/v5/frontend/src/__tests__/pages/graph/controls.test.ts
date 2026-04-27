@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const mockMachineComboHandle = { destroy: vi.fn(), clear: vi.fn() };
-vi.mock('../../../components/machine-combobox', () => ({
-  renderMachineCombobox: vi.fn(() => mockMachineComboHandle),
+const mockSearchChipsHandle = { destroy: vi.fn(), setChips: vi.fn(), element: document.createElement('div') };
+vi.mock('../../../components/search-chips', () => ({
+  createSearchChips: vi.fn(() => mockSearchChipsHandle),
+  chipsToParams: vi.fn(() => ({})),
 }));
 
 vi.mock('../../../components/metric-selector', () => ({
@@ -33,14 +34,15 @@ vi.mock('../../../components/metric-selector', () => ({
 }));
 
 import { createControls, type ControlsCallbacks } from '../../../pages/graph/controls';
-import { renderMachineCombobox } from '../../../components/machine-combobox';
+import { createSearchChips } from '../../../components/search-chips';
 import { filterMetricFields, renderMetricSelector, renderEmptyMetricSelector } from '../../../components/metric-selector';
 import type { GraphState } from '../../../pages/graph/state';
 
 function makeState(overrides?: Partial<GraphState>): GraphState {
   return {
     suite: 'nts',
-    machines: ['m1'],
+    traces: [{ compiler: 'clang' }],
+    machines: [],
     metric: 'exec_time',
     testFilter: '',
     runAgg: 'median',
@@ -54,8 +56,8 @@ function makeState(overrides?: Partial<GraphState>): GraphState {
 function makeCallbacks(): { [K in keyof ControlsCallbacks]: ReturnType<typeof vi.fn> } {
   return {
     onSuiteChange: vi.fn(),
-    onMachineAdd: vi.fn(),
-    onMachineRemove: vi.fn(),
+    onTraceAdd: vi.fn(),
+    onTraceRemove: vi.fn(),
     onMetricChange: vi.fn(),
     onFilterChange: vi.fn(),
     onRunAggChange: vi.fn(),
@@ -74,6 +76,7 @@ function findSelectByOptions(panel: HTMLElement, ...optionValues: string[]): HTM
 describe('createControls', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSearchChipsHandle.element = document.createElement('div');
   });
 
   // ---- DOM structure ----
@@ -91,23 +94,11 @@ describe('createControls', () => {
     expect(suiteSelect.value).toBe('nts');
   });
 
-  it('renders machine combobox for current suite', () => {
+  it('creates search chips for current suite', () => {
     createControls(makeState({ suite: 'nts' }), ['nts'], makeCallbacks());
-    expect(renderMachineCombobox).toHaveBeenCalledWith(
-      expect.any(HTMLElement),
+    expect(createSearchChips).toHaveBeenCalledWith(
       expect.objectContaining({ testsuite: 'nts' }),
     );
-  });
-
-  it('renders initial machine chips with correct symbol chars', () => {
-    const handle = createControls(makeState({ machines: ['m1', 'm2'] }), ['nts'], makeCallbacks());
-    const panel = handle.getElement();
-    const chips = panel.querySelectorAll('.machine-chip');
-    expect(chips.length).toBe(2);
-
-    const symbols = panel.querySelectorAll('.chip-symbol');
-    expect(symbols[0].textContent).toBe('●');
-    expect(symbols[1].textContent).toBe('▲');
   });
 
   it('renders agg dropdowns, filter input, and regression toggle with initial values', () => {
@@ -147,18 +138,6 @@ describe('createControls', () => {
     suiteSelect.value = 'other';
     suiteSelect.dispatchEvent(new Event('change'));
     expect(callbacks.onSuiteChange).toHaveBeenCalledWith('other');
-  });
-
-  it('machine combobox onSelect fires onMachineAdd and clears combobox', () => {
-    const callbacks = makeCallbacks();
-    createControls(makeState(), ['nts'], callbacks);
-
-    const call = vi.mocked(renderMachineCombobox).mock.calls[0];
-    const onSelect = call[1].onSelect;
-    onSelect('new-machine');
-
-    expect(callbacks.onMachineAdd).toHaveBeenCalledWith('new-machine');
-    expect(mockMachineComboHandle.clear).toHaveBeenCalled();
   });
 
   it('agg changes fire onRunAggChange / onSampleAggChange', () => {
@@ -221,17 +200,6 @@ describe('createControls', () => {
     }
   });
 
-  it('machine chip remove button fires onMachineRemove', () => {
-    const callbacks = makeCallbacks();
-    const handle = createControls(makeState({ machines: ['m1', 'm2'] }), ['nts'], callbacks);
-    const panel = handle.getElement();
-
-    const removeButtons = panel.querySelectorAll('.chip-remove');
-    expect(removeButtons.length).toBe(2);
-    (removeButtons[0] as HTMLButtonElement).click();
-    expect(callbacks.onMachineRemove).toHaveBeenCalledWith('m1');
-  });
-
   // ---- Handle methods ----
 
   it('setEnabled(false) disables all inputs except suite selector', () => {
@@ -262,20 +230,19 @@ describe('createControls', () => {
     }
   });
 
-  it('setSuite destroys old combobox, creates new one, and updates enabled state', () => {
+  it('setSuite destroys old search chips, creates new ones, and updates enabled state', () => {
     const handle = createControls(makeState({ suite: 'nts' }), ['nts', 'other'], makeCallbacks());
-    vi.mocked(renderMachineCombobox).mockClear();
-    mockMachineComboHandle.destroy.mockClear();
+    vi.mocked(createSearchChips).mockClear();
+    mockSearchChipsHandle.destroy.mockClear();
 
     handle.setSuite('other');
-    expect(mockMachineComboHandle.destroy).toHaveBeenCalled();
-    expect(renderMachineCombobox).toHaveBeenCalledWith(
-      expect.any(HTMLElement),
+    expect(mockSearchChipsHandle.destroy).toHaveBeenCalled();
+    expect(createSearchChips).toHaveBeenCalledWith(
       expect.objectContaining({ testsuite: 'other' }),
     );
 
     // setSuite('') disables controls
-    vi.mocked(renderMachineCombobox).mockClear();
+    vi.mocked(createSearchChips).mockClear();
     handle.setSuite('');
     const panel = handle.getElement();
     const suiteSelect = panel.querySelector('.suite-select') as HTMLSelectElement;
@@ -297,17 +264,16 @@ describe('createControls', () => {
     expect(callbacks.onRegressionModeChange).not.toHaveBeenCalled();
   });
 
-  it('updateMachineChips replaces chips with new list', () => {
-    const handle = createControls(makeState({ machines: ['m1'] }), ['nts'], makeCallbacks());
+  it('updateTraceChips replaces chips with new list', () => {
+    const handle = createControls(makeState({ traces: [{ compiler: 'clang' }] }), ['nts'], makeCallbacks());
     const panel = handle.getElement();
-    expect(panel.querySelectorAll('.machine-chip').length).toBe(1);
 
-    handle.updateMachineChips(['x', 'y', 'z']);
-    const chips = panel.querySelectorAll('.machine-chip');
+    handle.updateTraceChips([{ compiler: 'clang' }, { os: 'linux' }, { arch: 'x86' }]);
+    const chips = panel.querySelectorAll('.trace-chip');
     expect(chips.length).toBe(3);
-    expect(chips[0].querySelector('.chip-symbol')!.textContent).toBe('●');
-    expect(chips[1].querySelector('.chip-symbol')!.textContent).toBe('▲');
-    expect(chips[2].querySelector('.chip-symbol')!.textContent).toBe('■');
+    expect(chips[0].querySelector('.chip-symbol')!.textContent).toBe('\u25CF');
+    expect(chips[1].querySelector('.chip-symbol')!.textContent).toBe('\u25B2');
+    expect(chips[2].querySelector('.chip-symbol')!.textContent).toBe('\u25A0');
   });
 
   it('updateMetricSelector replaces container with real selector or empty placeholder', () => {
@@ -325,10 +291,10 @@ describe('createControls', () => {
 
   // ---- Lifecycle ----
 
-  it('destroy calls machineComboHandle.destroy', () => {
+  it('destroy calls searchChipsHandle.destroy', () => {
     const handle = createControls(makeState(), ['nts'], makeCallbacks());
-    mockMachineComboHandle.destroy.mockClear();
+    mockSearchChipsHandle.destroy.mockClear();
     handle.destroy();
-    expect(mockMachineComboHandle.destroy).toHaveBeenCalled();
+    expect(mockSearchChipsHandle.destroy).toHaveBeenCalled();
   });
 });

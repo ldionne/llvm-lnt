@@ -11,7 +11,6 @@ import type { CursorPageResult } from '../api';
 import { el, truncate, debounce, ensureProtocol, resolveDisplayMap, matchesFilter, updateFilterValidation } from '../utils';
 import { renderDataTable, type Column } from '../components/data-table';
 import { renderPagination } from '../components/pagination';
-import { renderMachineCombobox } from '../components/machine-combobox';
 import { renderMetricSelector, filterMetricFields } from '../components/metric-selector';
 import { renderCommitSearch } from '../components/commit-search';
 import { ALL_STATES, STATE_META, renderStateBadge } from '../regression-utils';
@@ -68,9 +67,7 @@ export function renderRegressionTab(opts: RegressionTabOptions): void {
 
   // --- Filter state ---
   const activeStates = new Set<RegressionState>();
-  let machineFilter = '';
   let metricFilter = '';
-  let hasCommitFilter: boolean | undefined;
   let titleSearch = '';
   const cursorStack: string[] = [];
   let currentCursor: string | undefined;
@@ -99,25 +96,6 @@ export function renderRegressionTab(opts: RegressionTabOptions): void {
   }
   renderStateChips();
 
-  // --- Machine filter ---
-  const machineGroup = el('div', { class: 'control-group' });
-  machineGroup.append(el('label', {}, 'Machine'));
-  const machineInputContainer = el('div', {});
-  machineGroup.append(machineInputContainer);
-  const machineHandle = renderMachineCombobox(machineInputContainer, {
-    testsuite: ts,
-    onSelect: (name) => {
-      machineFilter = name;
-      resetAndLoad();
-    },
-    onClear: () => {
-      machineFilter = '';
-      resetAndLoad();
-    },
-  });
-  opts.trackCleanup(machineHandle.destroy);
-  filterRow1.append(machineGroup);
-
   // --- Metric filter ---
   const metricGroup = el('div', {});
   filterRow1.append(metricGroup);
@@ -130,16 +108,6 @@ export function renderRegressionTab(opts: RegressionTabOptions): void {
   }).catch(() => {
     metricGroup.append(el('span', { class: 'progress-label' }, 'Failed to load metrics'));
   });
-
-  // --- Has commit checkbox ---
-  const hasCommitLabel = el('label', { class: 'control-group control-group-checkbox' });
-  const hasCommitCb = el('input', { type: 'checkbox' }) as HTMLInputElement;
-  hasCommitLabel.append(hasCommitCb, ' Has commit');
-  hasCommitCb.addEventListener('change', () => {
-    hasCommitFilter = hasCommitCb.checked ? true : undefined;
-    resetAndLoad();
-  });
-  filterRow1.append(hasCommitLabel);
 
   // --- Title search (client-side) ---
   const titleInput = el('input', {
@@ -190,9 +158,7 @@ export function renderRegressionTab(opts: RegressionTabOptions): void {
     try {
       const result = await getRegressions(ts, {
         state: activeStates.size > 0 ? [...activeStates] : undefined,
-        machine: machineFilter || undefined,
         metric: metricFilter || undefined,
-        has_commit: hasCommitFilter,
         limit: PAGE_SIZE,
         cursor: currentCursor,
       }, signal);
@@ -260,10 +226,10 @@ export function renderRegressionTab(opts: RegressionTabOptions): void {
         sortValue: (r) => r.commit || '',
       },
       {
-        key: 'machine_count',
-        label: 'Machines',
+        key: 'run_count',
+        label: 'Runs',
         cellClass: 'col-num',
-        sortValue: (r) => r.machine_count,
+        sortValue: (r) => r.run_count,
       },
       {
         key: 'test_count',

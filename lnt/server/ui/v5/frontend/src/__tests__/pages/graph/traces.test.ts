@@ -9,15 +9,14 @@ import {
   buildRawValuesCallback,
   assignSymbol,
   assignSymbolChar,
-  MACHINE_SYMBOLS,
+  TRACE_SYMBOLS,
   SYMBOL_CHARS,
 } from '../../../pages/graph/traces';
 import type { QueryDataPoint, RegressionListItem } from '../../../types';
 
-function makePoint(test: string, commitValue: string, value: number, runUuid = 'r1', machine = 'm1'): QueryDataPoint {
+function makePoint(test: string, commitValue: string, value: number, runUuid = 'r1'): QueryDataPoint {
   return {
     test,
-    machine,
     metric: 'exec_time',
     value,
     commit: commitValue,
@@ -168,29 +167,29 @@ describe('buildBaselinesFromData', () => {
   const avg = (values: number[]): number => values.reduce((s, v) => s + v, 0) / values.length;
 
   function buildLookup(
-    baselines: Array<{ suite: string; machine: string; commit: string }>,
+    baselines: Array<{ suite: string; trace: string; commit: string }>,
     metric: string,
     pointsPerBaseline: QueryDataPoint[][],
-  ): (s: string, m: string, c: string, met: string) => QueryDataPoint[] {
+  ): (s: string, t: string, c: string, met: string) => QueryDataPoint[] {
     const cache = new Map<string, QueryDataPoint[]>();
     for (let i = 0; i < baselines.length; i++) {
       const bl = baselines[i];
-      cache.set(`${bl.suite}::${bl.machine}::${bl.commit}::${metric}`, pointsPerBaseline[i] || []);
+      cache.set(`${bl.suite}::${bl.trace}::${bl.commit}::${metric}`, pointsPerBaseline[i] || []);
     }
-    return (s, m, o, met) => cache.get(`${s}::${m}::${o}::${met}`) ?? [];
+    return (s, t, c, met) => cache.get(`${s}::${t}::${c}::${met}`) ?? [];
   }
 
   const emptyLookup = () => [] as QueryDataPoint[];
 
   it('aggregates multiple runs using provided agg function', () => {
-    const bl = [{ suite: 'nts', machine: 'm1', commit: '100' }];
+    const bl = [{ suite: 'nts', trace: 'm1', commit: '100' }];
     const pts = [makePoint('test-A', '100', 1.0), makePoint('test-A', '100', 3.0), makePoint('test-A', '100', 5.0)];
     const result = buildBaselinesFromData(bl, buildLookup(bl, 'exec_time', [pts]), 'exec_time', med);
     expect(result[0].values.get('test-A')).toBe(3.0);
   });
 
   it('is consistent with buildTraces', () => {
-    const bl = [{ suite: 'nts', machine: 'm1', commit: '100' }];
+    const bl = [{ suite: 'nts', trace: 'm1', commit: '100' }];
     const pts = [makePoint('test-A', '100', 1.0), makePoint('test-A', '100', 3.0), makePoint('test-A', '100', 5.0)];
     const blResult = buildBaselinesFromData(bl, buildLookup(bl, 'exec_time', [pts]), 'exec_time', med);
     const traces = buildTraces(pts, 'median', 'median');
@@ -198,20 +197,20 @@ describe('buildBaselinesFromData', () => {
   });
 
   it('uses mean aggregation when provided', () => {
-    const bl = [{ suite: 'nts', machine: 'm1', commit: '100' }];
+    const bl = [{ suite: 'nts', trace: 'm1', commit: '100' }];
     const pts = [makePoint('test-A', '100', 1.0), makePoint('test-A', '100', 3.0)];
     const result = buildBaselinesFromData(bl, buildLookup(bl, 'exec_time', [pts]), 'exec_time', avg);
     expect(result[0].values.get('test-A')).toBe(2.0);
   });
 
   it('handles single data point', () => {
-    const bl = [{ suite: 'nts', machine: 'm1', commit: '100' }];
+    const bl = [{ suite: 'nts', trace: 'm1', commit: '100' }];
     const pts = [makePoint('test-A', '100', 42.0)];
     expect(buildBaselinesFromData(bl, buildLookup(bl, 'exec_time', [pts]), 'exec_time', med)[0].values.get('test-A')).toBe(42.0);
   });
 
   it('handles multiple tests at same commit', () => {
-    const bl = [{ suite: 'nts', machine: 'm1', commit: '100' }];
+    const bl = [{ suite: 'nts', trace: 'm1', commit: '100' }];
     const pts = [
       makePoint('test-A', '100', 1.0), makePoint('test-A', '100', 3.0),
       makePoint('test-B', '100', 10.0), makePoint('test-B', '100', 20.0),
@@ -223,8 +222,8 @@ describe('buildBaselinesFromData', () => {
 
   it('handles multiple baselines', () => {
     const bls = [
-      { suite: 'nts', machine: 'm1', commit: '100' },
-      { suite: 'nts', machine: 'm1', commit: '101' },
+      { suite: 'nts', trace: 'm1', commit: '100' },
+      { suite: 'nts', trace: 'm1', commit: '101' },
     ];
     const result = buildBaselinesFromData(
       bls,
@@ -237,7 +236,7 @@ describe('buildBaselinesFromData', () => {
   });
 
   it('returns empty values map when no cached data', () => {
-    const result = buildBaselinesFromData([{ suite: 'nts', machine: 'm1', commit: '999' }], emptyLookup, 'exec_time', med);
+    const result = buildBaselinesFromData([{ suite: 'nts', trace: 'm1', commit: '999' }], emptyLookup, 'exec_time', med);
     expect(result[0].values.size).toBe(0);
   });
 
@@ -245,23 +244,23 @@ describe('buildBaselinesFromData', () => {
     expect(buildBaselinesFromData([], emptyLookup, 'exec_time', med)).toHaveLength(0);
   });
 
-  it('builds label with suite/machine/commit format', () => {
-    const result = buildBaselinesFromData([{ suite: 'nts', machine: 'm1', commit: '100' }], emptyLookup, 'exec_time', med);
+  it('builds label with suite/trace/commit format', () => {
+    const result = buildBaselinesFromData([{ suite: 'nts', trace: 'm1', commit: '100' }], emptyLookup, 'exec_time', med);
     expect(result[0].label).toBe('nts/m1/100');
   });
 
   it('uses displayMap for commit in label', () => {
     const dm = new Map([['100', 'v1.0']]);
     const result = buildBaselinesFromData(
-      [{ suite: 'nts', machine: 'm1', commit: '100' }], emptyLookup, 'exec_time', med, dm,
+      [{ suite: 'nts', trace: 'm1', commit: '100' }], emptyLookup, 'exec_time', med, dm,
     );
     expect(result[0].label).toBe('nts/m1/v1.0');
   });
 
   it('supports cross-suite baselines', () => {
     const bls = [
-      { suite: 'nts', machine: 'm1', commit: '100' },
-      { suite: 'other', machine: 'm2', commit: '200' },
+      { suite: 'nts', trace: 'm1', commit: '100' },
+      { suite: 'other', trace: 'm2', commit: '200' },
     ];
     const result = buildBaselinesFromData(
       bls,
@@ -299,10 +298,14 @@ describe('buildColorMap', () => {
 // ---- buildChartData ----
 
 describe('buildChartData', () => {
-  function makeLookup(points: QueryDataPoint[]): (s: string, m: string, met: string, t: string) => QueryDataPoint[] {
+  function makeLookupPoint(test: string, commitValue: string, value: number, runUuid = 'r1', machine = 'm1'): QueryDataPoint & { _machine: string } {
+    return { ...makePoint(test, commitValue, value, runUuid), _machine: machine };
+  }
+
+  function makeLookup(points: Array<QueryDataPoint & { _machine: string }>): (s: string, m: string, met: string, t: string) => QueryDataPoint[] {
     const byKey = new Map<string, QueryDataPoint[]>();
     for (const pt of points) {
-      const key = `${pt.machine}::${pt.metric}::${pt.test}`;
+      const key = `${pt._machine}::${pt.metric}::${pt.test}`;
       let arr = byKey.get(key);
       if (!arr) { arr = []; byKey.set(key, arr); }
       arr.push(pt);
@@ -312,12 +315,12 @@ describe('buildChartData', () => {
 
   it('builds traces across multiple machines', () => {
     const points = [
-      makePoint('test-A', '100', 1.0, 'r1', 'm1'),
-      makePoint('test-A', '100', 2.0, 'r1', 'm2'),
+      makeLookupPoint('test-A', '100', 1.0, 'r1', 'm1'),
+      makeLookupPoint('test-A', '100', 2.0, 'r1', 'm2'),
     ];
     const { traces } = buildChartData({
       selectedTests: new Set(['test-A']),
-      machines: ['m1', 'm2'],
+      traces: ['m1', 'm2'],
       metric: 'exec_time',
       runAgg: 'median',
       sampleAgg: 'median',
@@ -326,18 +329,18 @@ describe('buildChartData', () => {
       colorMap: buildColorMap(['test-A']),
     });
     expect(traces).toHaveLength(2);
-    expect(traces[0].machine).toBe('m1');
-    expect(traces[1].machine).toBe('m2');
+    expect(traces[0].trace).toBe('m1');
+    expect(traces[1].trace).toBe('m2');
   });
 
   it('assigns different marker symbols per machine', () => {
     const points = [
-      makePoint('test-A', '100', 1.0, 'r1', 'm1'),
-      makePoint('test-A', '100', 2.0, 'r1', 'm2'),
+      makeLookupPoint('test-A', '100', 1.0, 'r1', 'm1'),
+      makeLookupPoint('test-A', '100', 2.0, 'r1', 'm2'),
     ];
     const { traces } = buildChartData({
       selectedTests: new Set(['test-A']),
-      machines: ['m1', 'm2'],
+      traces: ['m1', 'm2'],
       metric: 'exec_time',
       runAgg: 'median',
       sampleAgg: 'median',
@@ -351,12 +354,12 @@ describe('buildChartData', () => {
 
   it('assigns same color for same test across machines', () => {
     const points = [
-      makePoint('test-A', '100', 1.0, 'r1', 'm1'),
-      makePoint('test-A', '100', 2.0, 'r1', 'm2'),
+      makeLookupPoint('test-A', '100', 1.0, 'r1', 'm1'),
+      makeLookupPoint('test-A', '100', 2.0, 'r1', 'm2'),
     ];
     const { traces } = buildChartData({
       selectedTests: new Set(['test-A']),
-      machines: ['m1', 'm2'],
+      traces: ['m1', 'm2'],
       metric: 'exec_time',
       runAgg: 'median',
       sampleAgg: 'median',
@@ -369,12 +372,12 @@ describe('buildChartData', () => {
 
   it('builds rawValuesIndex for hover scatter', () => {
     const points = [
-      makePoint('test-A', '100', 1.0, 'r1', 'm1'),
-      makePoint('test-A', '100', 3.0, 'r2', 'm1'),
+      makeLookupPoint('test-A', '100', 1.0, 'r1', 'm1'),
+      makeLookupPoint('test-A', '100', 3.0, 'r2', 'm1'),
     ];
     const { rawValuesIndex } = buildChartData({
       selectedTests: new Set(['test-A']),
-      machines: ['m1'],
+      traces: ['m1'],
       metric: 'exec_time',
       runAgg: 'median',
       sampleAgg: 'median',
@@ -387,12 +390,12 @@ describe('buildChartData', () => {
 
   it('sorts traces by name', () => {
     const points = [
-      makePoint('zebra', '100', 1.0, 'r1', 'm1'),
-      makePoint('alpha', '100', 2.0, 'r1', 'm1'),
+      makeLookupPoint('zebra', '100', 1.0, 'r1', 'm1'),
+      makeLookupPoint('alpha', '100', 2.0, 'r1', 'm1'),
     ];
     const { traces } = buildChartData({
       selectedTests: new Set(['zebra', 'alpha']),
-      machines: ['m1'],
+      traces: ['m1'],
       metric: 'exec_time',
       runAgg: 'median',
       sampleAgg: 'median',
@@ -424,7 +427,7 @@ describe('buildRawValuesCallback', () => {
 
 describe('buildRegressionOverlays', () => {
   function makeRegression(commit: string, state: 'active' | 'detected' | 'fixed', title = 'Reg'): RegressionListItem {
-    return { uuid: 'r1', title, bug: null, state, commit, machine_count: 1, test_count: 1 };
+    return { uuid: 'r1', title, bug: null, state, commit, run_count: 1, test_count: 1 };
   }
 
   it('creates shapes and annotations for each regression with a commit', () => {
@@ -435,7 +438,7 @@ describe('buildRegressionOverlays', () => {
   });
 
   it('skips regressions without commits', () => {
-    const regs = [{ uuid: 'r1', title: 'Reg', bug: null, state: 'active' as const, commit: null, machine_count: 1, test_count: 1 }];
+    const regs = [{ uuid: 'r1', title: 'Reg', bug: null, state: 'active' as const, commit: null, run_count: 1, test_count: 1 }];
     const { shapes } = buildRegressionOverlays(regs, new Map());
     expect(shapes).toHaveLength(0);
   });
@@ -470,7 +473,7 @@ describe('assignSymbol / assignSymbolChar', () => {
   });
 
   it('wraps around for large indices', () => {
-    expect(assignSymbol(MACHINE_SYMBOLS.length)).toBe('circle');
+    expect(assignSymbol(TRACE_SYMBOLS.length)).toBe('circle');
   });
 
   it('returns matching unicode chars', () => {

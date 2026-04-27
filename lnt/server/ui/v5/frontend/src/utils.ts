@@ -3,8 +3,8 @@ import { getTestSuiteInfoCached, resolveCommits } from './api';
 import { navigate, getBasePath, getUrlBase } from './router';
 
 /**
- * Separator between test name and machine name in trace names.
- * Uses middle-dot (U+00B7) to avoid ambiguity when machine names contain ' - '.
+ * Separator between test name and trace query in trace names.
+ * Uses middle-dot (U+00B7) to avoid ambiguity when trace queries contain ' - '.
  */
 export const TRACE_SEP = ' \u00b7 ';
 
@@ -20,7 +20,7 @@ const PLOTLY_COLORS = [
 ];
 
 /** Return a color from the shared palette by index (wraps around). */
-export function machineColor(index: number): string {
+export function traceColor(index: number): string {
   return PLOTLY_COLORS[index % PLOTLY_COLORS.length];
 }
 
@@ -323,7 +323,7 @@ export function agnosticUrl(path: string): string {
  * SPA context changes (different route table, different basePath).
  *
  * @param text  Link text
- * @param path  Path relative to /v5, e.g. "/compare?suite_a=nts&machine_a=..."
+ * @param path  Path relative to /v5, e.g. "/compare?suite_a=nts&params_a=..."
  */
 export function agnosticLink(text: string, path: string): HTMLAnchorElement {
   return el('a', { href: agnosticUrl(path), class: 'spa-link' }, text);

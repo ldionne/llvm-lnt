@@ -316,7 +316,7 @@ function renderCreateSuiteTab(
 
   const jsonArea = el('textarea', {
     class: 'admin-textarea',
-    placeholder: '{\n  "format_version": "5",\n  "name": "my_suite",\n  "metrics": [\n    {"name": "exec_time", "type": "Real", "bigger_is_better": false}\n  ],\n  "commit_fields": [\n    {"name": "revision"}\n  ],\n  "machine_fields": [\n    {"name": "hostname"}\n  ]\n}',
+    placeholder: '{\n  "format_version": "5",\n  "name": "my_suite",\n  "metrics": [\n    {"name": "exec_time", "type": "Real", "bigger_is_better": false}\n  ],\n  "commit_fields": [\n    {"name": "revision"}\n  ]\n}',
   }) as HTMLTextAreaElement;
   jsonArea.rows = 10;
 
@@ -392,7 +392,7 @@ function renderDeleteSuite(
   const confirmPanel = el('div', { class: 'admin-delete-confirm', style: 'display: none' });
 
   confirmPanel.append(el('p', { class: 'admin-delete-warning' },
-    `Deleting test suite '${suiteName}' will permanently destroy all machines, runs, ` +
+    `Deleting test suite '${suiteName}' will permanently destroy all runs, ` +
     'commits, samples, regressions, and field changes associated with it. ' +
     'This cannot be undone.',
   ));
@@ -497,28 +497,23 @@ function renderSchemaContent(container: HTMLElement, info: TestSuiteInfo): void 
     container.append(table);
   }
 
-  // Other schema sections
-  for (const [label, fields] of [
-    ['Commit Fields', info.schema.commit_fields],
-    ['Machine Fields', info.schema.machine_fields],
-  ] as const) {
-    if (fields && fields.length > 0) {
-      container.append(el('h4', {}, label));
-      const table = el('table', { class: 'comparison-table' }) as HTMLTableElement;
-      const thead = el('thead');
-      const hr = el('tr');
-      hr.append(el('th', {}, 'Name'), el('th', {}, 'Type'));
-      thead.append(hr);
-      table.append(thead);
+  // Other schema sections — commit fields
+  if (info.schema.commit_fields && info.schema.commit_fields.length > 0) {
+    container.append(el('h4', {}, 'Commit Fields'));
+    const table = el('table', { class: 'comparison-table' }) as HTMLTableElement;
+    const thead = el('thead');
+    const hr = el('tr');
+    hr.append(el('th', {}, 'Name'), el('th', {}, 'Type'));
+    thead.append(hr);
+    table.append(thead);
 
-      const tbody = el('tbody');
-      for (const f of fields) {
-        const tr = el('tr');
-        tr.append(el('td', {}, f.name), el('td', {}, f.type));
-        tbody.append(tr);
-      }
-      table.append(tbody);
-      container.append(table);
+    const tbody = el('tbody');
+    for (const f of info.schema.commit_fields) {
+      const tr = el('tr');
+      tr.append(el('td', {}, f.name), el('td', {}, f.type));
+      tbody.append(tr);
     }
+    table.append(tbody);
+    container.append(table);
   }
 }

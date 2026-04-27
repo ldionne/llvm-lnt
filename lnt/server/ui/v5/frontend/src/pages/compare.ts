@@ -6,7 +6,7 @@
 //
 // Per-run sample caching: fetched samples are cached by run UUID. Changing the
 // metric, aggregation, or noise re-aggregates from cache without API calls.
-// Only new run UUIDs (from commit/machine changes) trigger fetches.
+// Only new run UUIDs (from commit/parameter changes) trigger fetches.
 //
 // Cross-suite support: each side can independently select a test suite.
 // Samples are fetched from the side's suite. The comparison joins on test name.
@@ -444,17 +444,18 @@ export const comparePage: PageModule = {
       createContent.append(titleInput, createInfo, createBtn, createFeedback);
 
       function buildIndicatorsFromComparison(): {
-        machine?: string; commit?: string;
-        indicators: Array<{ machine: string; test: string; metric: string }>;
+        commit?: string;
+        indicators: Array<{ run_uuid: string; test: string; metric: string }>;
       } {
         const st = getState();
         const commit = st.sideB.commit || st.sideA.commit || undefined;
-        const machine = st.sideA.machine || st.sideB.machine || undefined;
         const tests = computeVisibleTests();
-        const indicators = machine && st.metric
-          ? tests.map(t => ({ machine, test: t, metric: st.metric }))
+        // Use the latest run from side B (or A) for each indicator
+        const runUuid = st.sideB.runs[st.sideB.runs.length - 1] || st.sideA.runs[st.sideA.runs.length - 1] || '';
+        const indicators = runUuid && st.metric
+          ? tests.map(t => ({ run_uuid: runUuid, test: t, metric: st.metric }))
           : [];
-        return { machine, commit, indicators };
+        return { commit, indicators };
       }
 
       createBtn.addEventListener('click', async () => {
@@ -561,7 +562,7 @@ export const comparePage: PageModule = {
 
         if (indicators.length === 0) {
           addExistingFeedback.replaceChildren(
-            el('p', { class: 'error-banner' }, 'No indicators to add (need machine and metric)'),
+            el('p', { class: 'error-banner' }, 'No indicators to add (need runs and metric)'),
           );
           addExistingBtn.disabled = false;
           return;
@@ -615,10 +616,9 @@ export const comparePage: PageModule = {
         }
 
         // Update info text
-        const machine = st.sideA.machine || st.sideB.machine || '(none)';
         const commit = st.sideB.commit || st.sideA.commit || '(none)';
         const testCount = computeVisibleTests().length;
-        createInfo.textContent = `Pre-filled: commit=${truncate(commit, 12)}, machine=${machine}, ${testCount} tests`;
+        createInfo.textContent = `Pre-filled: commit=${truncate(commit, 12)}, ${testCount} tests`;
       }
 
       // Hook into recompute cycle

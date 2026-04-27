@@ -1,10 +1,11 @@
 // pages/graph/controls.ts — Control panel for the Graph page.
-// Suite dropdown, machine chip input, metric selector, test filter,
+// Suite dropdown, trace search chips, metric selector, test filter,
 // aggregation dropdowns, regression toggle.
 
 import { el, debounce, updateFilterValidation } from '../../utils';
 import type { FieldInfo, AggFn } from '../../types';
-import { renderMachineCombobox } from '../../components/machine-combobox';
+import { formatParamQuery } from '../../types';
+import { createSearchChips, chipsToParams, type SearchChipsHandle } from '../../components/search-chips';
 import { filterMetricFields, renderMetricSelector, renderEmptyMetricSelector } from '../../components/metric-selector';
 import type { GraphState, RegressionAnnotationMode } from './state';
 import { assignSymbolChar } from './traces';
@@ -14,11 +15,11 @@ import { assignSymbolChar } from './traces';
 export interface ControlsHandle {
   /** Replace the metric selector with new fields. */
   updateMetricSelector(fields: FieldInfo[], currentMetric: string): void;
-  /** Re-render machine chips (after add/remove). */
-  updateMachineChips(machines: string[]): void;
+  /** Re-render trace chips (after add/remove). */
+  updateTraceChips(traces: Array<Record<string, string>>): void;
   /** Enable or disable all controls (disabled when no suite). */
   setEnabled(enabled: boolean): void;
-  /** Update the machine combobox for a new suite. */
+  /** Update the search chips for a new suite. */
   setSuite(suite: string): void;
   /** Programmatically set the regression mode dropdown (does NOT fire callback). */
   setRegressionMode(mode: RegressionAnnotationMode): void;
@@ -32,8 +33,8 @@ export interface ControlsHandle {
 
 export interface ControlsCallbacks {
   onSuiteChange(suite: string): void;
-  onMachineAdd(name: string): void;
-  onMachineRemove(name: string): void;
+  onTraceAdd(params: Record<string, string>): void;
+  onTraceRemove(params: Record<string, string>): void;
   onMetricChange(metric: string): void;
   onFilterChange(filter: string): void;
   onRunAggChange(agg: AggFn): void;
@@ -80,7 +81,7 @@ export function createControls(
 ): ControlsHandle {
   const panel = el('div', { class: 'controls-panel' });
 
-  // Row 1: Suite + Machine combobox + Machine chips
+  // Row 1: Suite + Trace search chips + Trace chips
   const row1 = el('div', { class: 'controls-row controls-row-top' });
 
   // Suite selector
@@ -97,13 +98,13 @@ export function createControls(
   suiteGroup.append(suiteSelect);
   row1.append(suiteGroup);
 
-  // Machine combobox
-  const machineGroup = el('div', { class: 'control-group machine-control' });
-  machineGroup.append(el('label', {}, 'Machines'));
-  const machineComboContainer = el('div', {});
-  const chipsContainer = el('div', { class: 'machine-chips' });
-  machineGroup.append(machineComboContainer, chipsContainer);
-  row1.append(machineGroup);
+  // Trace search chips and chips display
+  const traceGroup = el('div', { class: 'control-group' });
+  traceGroup.append(el('label', {}, 'Traces'));
+  const traceComboContainer = el('div', {});
+  const chipsContainer = el('div', { class: 'trace-chips' });
+  traceGroup.append(traceComboContainer, chipsContainer);
+  row1.append(traceGroup);
 
   panel.append(row1);
 
@@ -142,47 +143,57 @@ export function createControls(
 
   panel.append(row2);
 
-  // --- Machine combobox handle ---
-  let machineComboHandle: { destroy: () => void; clear: () => void } | null = null;
+  // --- Search chips handle for trace input ---
+  let searchChipsHandle: SearchChipsHandle | null = null;
 
-  function createMachineCombo(suite: string): void {
-    if (machineComboHandle) {
-      machineComboHandle.destroy();
-      machineComboHandle = null;
+  function createTraceSearchChips(suite: string): void {
+    if (searchChipsHandle) {
+      searchChipsHandle.destroy();
+      searchChipsHandle = null;
     }
-    machineComboContainer.replaceChildren();
-    machineComboHandle = renderMachineCombobox(machineComboContainer, {
+    traceComboContainer.replaceChildren();
+    if (!suite) return;
+    searchChipsHandle = createSearchChips({
       testsuite: suite,
-      onSelect(name: string) {
-        callbacks.onMachineAdd(name);
-        machineComboHandle?.clear();
+      placeholder: 'Add trace (param filter)...',
+      onChange: (chips) => {
+        if (chips.length > 0) {
+          const params = chipsToParams(chips);
+          callbacks.onTraceAdd(params);
+          // Clear the chips input after adding a trace
+          searchChipsHandle?.setChips([]);
+        }
       },
     });
+    traceComboContainer.append(searchChipsHandle.element);
   }
 
-  createMachineCombo(state.suite);
+  createTraceSearchChips(state.suite);
 
-  // --- Machine chips rendering ---
+  // --- Trace chips rendering ---
 
-  function renderChips(machines: string[]): void {
+  function renderChips(traces: Array<Record<string, string>>): void {
     chipsContainer.replaceChildren();
-    for (let i = 0; i < machines.length; i++) {
-      const m = machines[i];
-      const chip = el('span', { class: 'machine-chip' });
+    for (let i = 0; i < traces.length; i++) {
+      const params = traces[i];
+      const label = formatParamQuery(params) || '(all)';
+      const chip = el('span', { class: 'trace-chip' });
       const symbolSpan = el('span', { class: 'chip-symbol' }, assignSymbolChar(i));
-      const nameSpan = el('span', {}, m);
+      const nameSpan = el('span', {}, label);
       const removeBtn = el('button', {
         type: 'button',
         class: 'chip-remove',
-        'aria-label': `Remove ${m}`,
-      }, '×');
-      removeBtn.addEventListener('click', () => callbacks.onMachineRemove(m));
+        'aria-label': `Remove ${label}`,
+      }, '\u00d7');
+      removeBtn.addEventListener('click', () => callbacks.onTraceRemove(params));
       chip.append(symbolSpan, nameSpan, removeBtn);
       chipsContainer.append(chip);
     }
   }
 
-  renderChips(state.machines);
+  // Render initial trace chips (empty; populated by index.ts after mount)
+  // For backward compatibility, legacy ?machine= params are converted to traces by index.ts
+  renderChips([]);
 
   // --- Enable/disable ---
 
@@ -207,14 +218,14 @@ export function createControls(
       }
     },
 
-    updateMachineChips(machines: string[]): void {
-      renderChips(machines);
+    updateTraceChips(traces: Array<Record<string, string>>): void {
+      renderChips(traces);
     },
 
     setEnabled,
 
     setSuite(suite: string): void {
-      createMachineCombo(suite);
+      createTraceSearchChips(suite);
       setEnabled(!!suite);
     },
 
@@ -231,7 +242,7 @@ export function createControls(
     },
 
     destroy(): void {
-      if (machineComboHandle) machineComboHandle.destroy();
+      if (searchChipsHandle) searchChipsHandle.destroy();
     },
   };
 }

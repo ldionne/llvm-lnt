@@ -24,8 +24,8 @@ declare const Plotly: {
 
 export interface TimeSeriesTrace {
   testName: string;
-  /** Machine name for this trace. */
-  machine: string;
+  /** Encoded trace query for this trace (e.g. "compiler:clang-21,os:linux"). */
+  trace: string;
   /** Explicit color for the trace line and markers. */
   color?: string;
   /** Plotly marker symbol (e.g., 'circle', 'triangle-up', 'square'). */
@@ -60,7 +60,7 @@ export interface TimeSeriesChartOptions {
   /** Lazy callback to get individual pre-aggregation values for a data point.
    *  Called on hover; if it returns >1 values, a scatter of the raw values
    *  is shown at the hovered x-position. */
-  getRawValues?: (testName: string, machine: string, commit: string) => number[];
+  getRawValues?: (testName: string, trace: string, commit: string) => number[];
   /** Additional Plotly shapes and annotations to overlay on the chart
    *  (e.g. regression markers). Merged into layout on each update. */
   overlays?: ChartOverlays;
@@ -104,14 +104,14 @@ export function buildPlotlyData(options: TimeSeriesChartOptions): {
   for (const trace of options.traces) {
     const x = trace.points.map(p => dx(p.commit));
     const y = trace.points.map(p => p.value);
-    const traceName = `${trace.testName}${TRACE_SEP}${trace.machine}`;
+    const traceName = `${trace.testName}${TRACE_SEP}${trace.trace}`;
     const customdata = trace.points.map(p => [
       p.commit,
       traceName,
       p.value.toPrecision(4),
       String(p.runCount),
       trace.testName,
-      trace.machine,
+      trace.trace,
       dx(p.commit),
     ]);
 
@@ -130,7 +130,7 @@ export function buildPlotlyData(options: TimeSeriesChartOptions): {
       customdata,
       hovertemplate:
         '<b>%{customdata[4]}</b><br>' +
-        'Machine: %{customdata[5]}<br>' +
+        'Trace: %{customdata[5]}<br>' +
         'Commit: %{customdata[6]}<br>' +
         'Value: %{customdata[2]}<br>' +
         'Runs: %{customdata[3]}<extra></extra>',
@@ -227,8 +227,8 @@ export function buildPlotlyData(options: TimeSeriesChartOptions): {
 export interface ChartHandle {
   /** Update the chart with new options using Plotly.react() (preserves zoom/pan). */
   update(options: TimeSeriesChartOptions): void;
-  /** Programmatically highlight traces by name '{test} · {machine}' (or clear).
-   *  Accepts a single name, an array (to highlight multiple machines for one test),
+  /** Programmatically highlight traces by name '{test} · {trace}' (or clear).
+   *  Accepts a single name, an array (to highlight multiple traces for one test),
    *  or null to clear highlighting. */
   hoverTrace(traceName: string | string[] | null): void;
   /** Destroy the chart and free resources. */
@@ -402,14 +402,14 @@ export function createTimeSeriesChart(
     }
 
     // Track main trace names for hoverTrace() mapping
-    traceNames = opts.traces.map(t => `${t.testName}${TRACE_SEP}${t.machine}`);
+    traceNames = opts.traces.map(t => `${t.testName}${TRACE_SEP}${t.trace}`);
 
     // Update callback and color map for scatter-on-hover
     getRawValues = opts.getRawValues;
     currentDisplayMap = opts.displayMap;
     traceColorMap = new Map<string, string>();
     for (const t of opts.traces) {
-      if (t.color) traceColorMap.set(`${t.testName}${TRACE_SEP}${t.machine}`, t.color);
+      if (t.color) traceColorMap.set(`${t.testName}${TRACE_SEP}${t.trace}`, t.color);
     }
 
     const { data, layout } = buildPlotlyData(opts);

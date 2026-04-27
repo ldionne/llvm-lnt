@@ -1,8 +1,7 @@
-import type { SideSelection, MachineInfo } from './types';
-import { getMachines } from './api';
+import type { SideSelection } from './types';
 import { el, matchesFilter, updateFilterValidation } from './utils';
 
-// Per-side commit picker references for enabling/disabling from machine combobox
+// Per-side commit picker references for enabling/disabling from search chips
 let commitPickerA: CommitPickerHandle | null = null;
 let commitPickerB: CommitPickerHandle | null = null;
 
@@ -20,8 +19,8 @@ export interface ComboboxContext {
     setSide: (partial: Partial<SideSelection>) => void;
     label: string;
   };
-  /** Fetch commits filtered by machine for a side. */
-  fetchCommitsForMachine: (side: 'a' | 'b', machine: string) => Promise<void>;
+  /** Fetch commits filtered by params for a side. */
+  fetchCommitsForParams: (side: 'a' | 'b', params: Record<string, string>) => Promise<void>;
 }
 
 /** Reset per-panel mutable state.  Call this at the start of renderSelectionPanel. */
@@ -37,16 +36,16 @@ export function refreshCommitDisplay(side: 'a' | 'b', rawCommit: string): void {
   picker.setValue(rawCommit);
 }
 
-/** Set the commit input to one of three states: no machine selected, loading commits, or ready. */
+/** Set the commit input to one of three states: no params selected, loading commits, or ready. */
 function setCommitInputState(
   input: HTMLInputElement | null,
-  state: 'no-machine' | 'loading' | 'ready',
+  state: 'no-params' | 'loading' | 'ready',
   value?: string,
 ): void {
   if (!input) return;
-  if (state === 'no-machine') {
+  if (state === 'no-params') {
     input.disabled = true;
-    input.placeholder = 'Select a machine first';
+    input.placeholder = 'Add parameters first';
   } else if (state === 'loading') {
     input.disabled = true;
     input.placeholder = 'Loading commits...';
@@ -55,6 +54,21 @@ function setCommitInputState(
     input.placeholder = 'Type to search commits...';
   }
   if (value !== undefined) input.value = value;
+}
+
+/** Get the commit picker for a side. */
+export function getCommitPicker(side: 'a' | 'b'): CommitPickerHandle | null {
+  return side === 'a' ? commitPickerA : commitPickerB;
+}
+
+/** Update commit input state externally (used by selection.ts after param changes). */
+export function updateCommitInputState(
+  side: 'a' | 'b',
+  state: 'no-params' | 'loading' | 'ready',
+  value?: string,
+): void {
+  const picker = side === 'a' ? commitPickerA : commitPickerB;
+  setCommitInputState(picker?.input ?? null, state, value);
 }
 
 function setAriaExpanded(wrapper: HTMLElement, expanded: boolean): void {
@@ -270,194 +284,13 @@ export function createCommitCombobox(
     },
   });
 
-  // Store refs for createMachineCombobox interaction
+  // Store refs for interaction
   if (side === 'a') commitPickerA = picker;
   else commitPickerB = picker;
 
-  // Disable commit input until a machine is selected.
-  // When machine is set (URL-restored), commits are being fetched by the
-  // machine combobox pre-fetch — keep disabled with a loading placeholder.
-  setCommitInputState(picker.input, selection.machine ? 'loading' : 'no-machine');
+  // Disable commit input until params are set.
+  const hasParams = Object.keys(selection.params).length > 0;
+  setCommitInputState(picker.input, hasParams ? 'loading' : 'no-params');
 
   return picker.element;
-}
-
-export function createMachineCombobox(
-  side: 'a' | 'b',
-  setSide: (partial: Partial<SideSelection>) => void,
-  onMachineChange: () => void,
-  ctx: ComboboxContext,
-): HTMLElement {
-  const dropdownId = `machine-dropdown-${side}`;
-  const wrapper = el('div', {
-    class: 'combobox',
-    role: 'combobox',
-    'aria-expanded': 'false',
-    'aria-haspopup': 'listbox',
-  });
-  const input = el('input', {
-    type: 'text',
-    placeholder: 'Type to search machines...',
-    class: 'combobox-input',
-    role: 'searchbox',
-    'aria-autocomplete': 'list',
-    'aria-controls': dropdownId,
-  });
-  const dropdown = el('ul', { class: 'combobox-dropdown', role: 'listbox', id: dropdownId });
-  wrapper.append(input, dropdown);
-
-  // Prevent blur from firing when clicking a dropdown item
-  dropdown.addEventListener('mousedown', (e) => e.preventDefault());
-
-  // Keyboard navigation
-  setupComboboxKeyboard(input, dropdown, wrapper);
-
-  const { selection } = ctx.getSideState(side);
-  if (selection.machine) {
-    input.value = selection.machine;
-    // Pre-fetch commits for URL-restored machine so the commit dropdown
-    // is correctly filtered from the start (not showing all commits).
-    // Fire-and-forget: the commit input doesn't exist yet (created later
-    // by createCommitCombobox), so use a null-check on completion.
-    ctx.fetchCommitsForMachine(side, selection.machine)
-      .then(() => {
-        const picker = side === 'a' ? commitPickerA : commitPickerB;
-        const { selection: updated } = ctx.getSideState(side);
-        setCommitInputState(picker?.input ?? null, 'ready');
-        if (updated.commit) picker?.setValue(updated.commit);
-      })
-      .catch(() => {});
-  }
-
-  async function onMachineSelect(name: string): Promise<void> {
-    setSide({ machine: name });
-
-    const picker = side === 'a' ? commitPickerA : commitPickerB;
-    setCommitInputState(picker?.input ?? null, 'loading');
-
-    await ctx.fetchCommitsForMachine(side, name);
-
-    // Clear commit if it's no longer valid for this machine
-    const { cachedCommitValues } = ctx.getCommitData(side);
-    const { selection: current } = ctx.getSideState(side);
-    if (current.commit && !cachedCommitValues.includes(current.commit)) {
-      setSide({ commit: '' });
-    }
-    const { selection: updated } = ctx.getSideState(side);
-    setCommitInputState(picker?.input ?? null, 'ready');
-    if (updated.commit) picker?.setValue(updated.commit);
-    else if (picker) picker.input.value = '';
-    onMachineChange();
-  }
-
-  // Fetch the full machine list once; filter locally on each keystroke.
-  let machines: MachineInfo[] | null = null;
-  const suite = ctx.getSuiteName(side);
-  if (suite) {
-    getMachines(suite, { limit: 500 })
-      .then((result) => {
-        machines = result.items;
-        // If the input has focus, refresh the dropdown with the loaded data
-        if (document.activeElement === input) {
-          showDropdown(input.value);
-        }
-      })
-      .catch(() => { /* ignore — combobox destroyed or suite changed */ });
-  }
-
-  function showDropdown(filter: string): void {
-    dropdown.replaceChildren();
-
-    // Still loading — show hint
-    if (machines === null) {
-      dropdown.replaceChildren(
-        el('li', { class: 'combobox-item', style: 'color: #999; pointer-events: none' }, 'Loading machines...'),
-      );
-      dropdown.classList.add('open');
-      setAriaExpanded(wrapper, true);
-      input.classList.remove('combobox-invalid');
-      return;
-    }
-
-    const matches = filter.trim()
-      ? machines.filter(m => matchesFilter(m.name, filter))
-      : machines;
-
-    for (const m of matches) {
-      const li = el('li', { class: 'combobox-item', role: 'option', tabindex: '-1' }, m.name);
-      li.addEventListener('click', () => {
-        input.value = m.name;
-        input.classList.remove('combobox-invalid');
-        dropdown.classList.remove('open');
-        setAriaExpanded(wrapper, false);
-        onMachineSelect(m.name);
-      });
-      dropdown.append(li);
-    }
-
-    const isOpen = matches.length > 0;
-    dropdown.classList.toggle('open', isOpen);
-    setAriaExpanded(wrapper, isOpen);
-
-    // Validation halo
-    if (input.value.trim() && matches.length === 0) {
-      input.classList.add('combobox-invalid');
-    } else {
-      input.classList.remove('combobox-invalid');
-    }
-  }
-
-  input.addEventListener('focus', () => showDropdown(input.value));
-  input.addEventListener('input', () => {
-    updateFilterValidation(input);
-    showDropdown(input.value);
-  });
-  input.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const text = input.value.trim();
-      if (!text) return;
-      const hasItems = dropdown.querySelector('.combobox-item') !== null;
-      if (hasItems) {
-        input.classList.remove('combobox-invalid');
-        dropdown.classList.remove('open');
-        setAriaExpanded(wrapper, false);
-        onMachineSelect(text);
-      } else {
-        input.classList.add('combobox-invalid');
-      }
-    }
-  });
-  input.addEventListener('blur', (e: FocusEvent) => {
-    if (wrapper.contains(e.relatedTarget as Node)) return;
-    dropdown.classList.remove('open');
-    setAriaExpanded(wrapper, false);
-  });
-  input.addEventListener('change', () => {
-    const text = input.value.trim();
-    if (!text) {
-      // Machine cleared — reset downstream state and disable commit
-      setSide({ machine: '', commit: '', runs: [] });
-      const picker = side === 'a' ? commitPickerA : commitPickerB;
-      setCommitInputState(picker?.input ?? null, 'no-machine', '');
-      input.classList.remove('combobox-invalid');
-      onMachineChange();
-      return;
-    }
-    const hasItems = dropdown.querySelector('.combobox-item') !== null;
-    if (hasItems) {
-      input.classList.remove('combobox-invalid');
-      onMachineSelect(input.value);
-    } else {
-      input.classList.add('combobox-invalid');
-    }
-  });
-
-  // Disable machine input until a suite is selected
-  if (!ctx.getSuiteName(side)) {
-    input.disabled = true;
-    input.placeholder = 'Select a suite first';
-  }
-
-  return wrapper;
 }

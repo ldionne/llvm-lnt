@@ -37,29 +37,15 @@ export interface CommitResolveResponse {
   not_found: string[];
 }
 
-export interface MachineInfo {
-  name: string;
-  info: Record<string, string>;
-}
-
 export interface RunInfo {
   uuid: string;
-  machine: string;
   commit: string;
   submitted_at: string | null;
-  run_parameters?: Record<string, string>;
-}
-
-/** Run as returned by GET /machines/{name}/runs. */
-export interface MachineRunInfo {
-  uuid: string;
-  commit: string;
-  submitted_at: string | null;
+  run_parameters: Record<string, string>;
 }
 
 export interface RunDetail {
   uuid: string;
-  machine: string;
   commit: string;
   submitted_at: string | null;
   run_parameters: Record<string, string>;
@@ -107,7 +93,6 @@ export interface ProfileFunctionDetail {
 export interface FieldChangeInfo {
   uuid: string;
   test: string | null;
-  machine: string | null;
   metric: string | null;
   old_value: number;
   new_value: number;
@@ -117,7 +102,6 @@ export interface FieldChangeInfo {
 
 export interface QueryDataPoint {
   test: string;
-  machine: string;
   metric: string;
   value: number;
   commit: string;
@@ -153,7 +137,7 @@ export type SortCol = 'test' | 'value_a' | 'value_b' | 'delta' | 'delta_pct' | '
 export interface SideSelection {
   suite: string;
   commit: string;
-  machine: string;
+  params: Record<string, string>;
   runs: string[];     // UUIDs
   runAgg: AggFn;
 }
@@ -224,7 +208,6 @@ export interface TestSuiteInfo {
   schema: {
     metrics: FieldInfo[];
     commit_fields: Array<{ name: string; type: string; display?: boolean }>;
-    machine_fields: Array<{ name: string; type: string }>;
   };
 }
 
@@ -239,7 +222,7 @@ export type RegressionState =
 
 export interface RegressionIndicator {
   uuid: string;
-  machine: string | null;
+  run_uuid: string | null;
   test: string | null;
   metric: string;
 }
@@ -251,7 +234,7 @@ export interface RegressionListItem {
   bug: string | null;
   state: RegressionState;
   commit: string | null;
-  machine_count: number;
+  run_count: number;
   test_count: number;
 }
 
@@ -264,4 +247,104 @@ export interface RegressionDetail {
   state: RegressionState;
   commit: string | null;
   indicators: RegressionIndicator[];
+}
+
+// Parameter query types
+
+export interface ParameterKeyItem {
+  key: string;
+}
+
+export interface ParameterValueItem {
+  value: string;
+}
+
+// Dashboard types
+
+export interface DashboardCard {
+  id?: number;
+  position: number;
+  params: Record<string, string>;
+  metric: string;
+  last_n: number;
+}
+
+// POST /samples request/response types
+
+export interface SamplesQueryRequest {
+  params?: Record<string, string | string[]>;
+  test?: string[];
+  metric?: string;
+  commit?: string;
+  run?: string;
+  sort?: string;
+  limit?: number;
+  cursor?: string;
+  submitted_before?: string;
+  submitted_after?: string;
+}
+
+export interface SamplesQueryItem {
+  test: string;
+  value?: number;
+  metrics?: Record<string, number | null>;
+  commit: string;
+  ordinal: number | null;
+  tag: string | null;
+  run_uuid: string;
+  submitted_at: string | null;
+}
+
+// Search chip types (used by components/search-chips.ts)
+
+export interface ParamChip {
+  key: string;
+  value: string;
+}
+
+/**
+ * Encode a parameter query dict to the compact URL format.
+ * e.g. {compiler: "clang-21", os: "linux"} => "compiler:clang-21,os:linux"
+ */
+export function encodeParamQuery(params: Record<string, string>): string {
+  return Object.entries(params)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(',');
+}
+
+/**
+ * Decode the compact URL format to a parameter query dict.
+ * e.g. "compiler:clang-21,os:linux" => {compiler: "clang-21", os: "linux"}
+ */
+export function decodeParamQuery(encoded: string): Record<string, string> {
+  if (!encoded) return {};
+  const result: Record<string, string> = {};
+  for (const part of encoded.split(',')) {
+    const idx = part.indexOf(':');
+    if (idx > 0) {
+      result[part.slice(0, idx)] = part.slice(idx + 1);
+    }
+  }
+  return result;
+}
+
+/**
+ * Format a parameter query dict as a compact display string.
+ * e.g. {compiler: "clang-21", os: "linux"} => "compiler:clang-21, os:linux"
+ */
+export function formatParamQuery(params: Record<string, string>): string {
+  return Object.entries(params)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(', ');
+}
+
+/**
+ * Convert a params dict to API query param format (param.X=Y entries).
+ */
+export function paramsToApiQuery(params: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(params)) {
+    result[`param.${k}`] = v;
+  }
+  return result;
 }

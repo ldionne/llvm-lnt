@@ -1,12 +1,13 @@
-// pages/commit-detail.ts — Commit detail with ordinal editing, prev/next, machine filter, runs table.
+// pages/commit-detail.ts — Commit detail with ordinal editing, prev/next, parameter filter, runs table.
 
 import type { PageModule, RouteParams } from '../router';
 import type { RunInfo, CommitDetail, RegressionListItem } from '../types';
 import { getCommit, getRunsByCommit, updateCommit, authErrorMessage, getRegressions } from '../api';
-import { el, spaLink, formatTime, truncate, debounce, matchesFilter, updateFilterValidation } from '../utils';
+import { el, spaLink, formatTime, truncate } from '../utils';
 import { navigate } from '../router';
 import { renderDataTable } from '../components/data-table';
 import { renderStateBadge } from '../regression-utils';
+import { formatParamQuery } from '../types';
 
 let controller: AbortController | null = null;
 
@@ -39,7 +40,6 @@ export const commitDetailPage: PageModule = {
     container.append(loading);
 
     let runs: RunInfo[] = [];
-    let machineFilter = '';
 
     Promise.all([
       getCommit(ts, commitValue, signal),
@@ -71,22 +71,6 @@ export const commitDetailPage: PageModule = {
         navContainer.append(nextBtn);
       }
 
-      // Machine filter
-      const filterInput = el('input', {
-        type: 'text',
-        class: 'test-filter-input',
-        placeholder: 'Filter machines...',
-      }) as HTMLInputElement;
-      const doFilter = debounce(() => {
-        machineFilter = filterInput.value;
-        renderSummaryAndTable();
-      }, 200);
-      filterInput.addEventListener('input', () => {
-        updateFilterValidation(filterInput);
-        doFilter();
-      });
-      filterContainer.append(filterInput);
-
       renderSummaryAndTable();
 
       // Load matching regressions (non-blocking)
@@ -96,39 +80,25 @@ export const commitDetailPage: PageModule = {
       container.append(el('p', { class: 'error-banner' }, `Failed to load commit: ${e}`));
     });
 
-    function filteredRuns(): RunInfo[] {
-      if (!machineFilter) return runs;
-      return runs.filter(r => matchesFilter(r.machine, machineFilter));
-    }
-
     function renderSummaryAndTable(): void {
-      const visible = filteredRuns();
-      const allMachines = new Set(runs.map(r => r.machine));
-      const visibleMachines = new Set(visible.map(r => r.machine));
-
       summaryContainer.replaceChildren();
-      if (machineFilter && visible.length !== runs.length) {
-        summaryContainer.append(el('p', {},
-          `${visible.length} of ${runs.length} run${runs.length !== 1 ? 's' : ''} across ${visibleMachines.size} of ${allMachines.size} machine${allMachines.size !== 1 ? 's' : ''}`
-        ));
-      } else {
-        summaryContainer.append(el('p', {},
-          `${runs.length} run${runs.length !== 1 ? 's' : ''} across ${allMachines.size} machine${allMachines.size !== 1 ? 's' : ''}`
-        ));
-      }
+      summaryContainer.append(el('p', {},
+        `${runs.length} run${runs.length !== 1 ? 's' : ''}`
+      ));
 
       tableContainer.replaceChildren();
       renderDataTable(tableContainer, {
         columns: [
-          { key: 'machine', label: 'Machine',
-            render: (r: RunInfo) => spaLink(r.machine, `/machines/${encodeURIComponent(r.machine)}`) },
           { key: 'uuid', label: 'Run UUID',
             render: (r: RunInfo) => spaLink(r.uuid.slice(0, 8), `/runs/${encodeURIComponent(r.uuid)}`) },
+          { key: 'parameters', label: 'Parameters',
+            render: (r: RunInfo) => formatParamQuery(r.run_parameters || {}),
+            sortable: false },
           { key: 'submitted_at', label: 'Submitted',
             render: (r: RunInfo) => formatTime(r.submitted_at) },
         ],
-        rows: visible,
-        emptyMessage: machineFilter ? 'No runs matching filter.' : 'No runs at this commit.',
+        rows: runs,
+        emptyMessage: 'No runs at this commit.',
       });
     }
   },
@@ -282,8 +252,8 @@ async function loadCommitRegressions(
           render: (r: RegressionListItem) => renderStateBadge(r.state),
         },
         {
-          key: 'machine_count',
-          label: 'Machines',
+          key: 'run_count',
+          label: 'Runs',
           cellClass: 'col-num',
         },
         {

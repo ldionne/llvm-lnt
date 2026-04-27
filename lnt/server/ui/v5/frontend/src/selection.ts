@@ -5,10 +5,11 @@ import { getBasePath } from './router';
 import { getState, setSideA, setSideB, setState, setNoiseConfig, swapSides } from './state';
 import { debounce, el, commitDisplayValue, updateFilterValidation } from './utils';
 import {
-  createCommitCombobox, createMachineCombobox, resetComboboxState,
-  refreshCommitDisplay,
+  createCommitCombobox, resetComboboxState,
+  refreshCommitDisplay, updateCommitInputState,
   type ComboboxContext,
 } from './combobox';
+import { createSearchChips, chipsToParams, paramsToChips, type SearchChipsHandle } from './components/search-chips';
 import { renderMetricSelector, renderEmptyMetricSelector, filterMetricFields } from './components/metric-selector';
 
 // Per-side cached data
@@ -31,9 +32,13 @@ let runsPanelVersionB = 0;
 let suiteLoadVersionA = 0;
 let suiteLoadVersionB = 0;
 
-// Per-side abort controllers for machine-filtered commit fetches
+// Per-side abort controllers for param-filtered commit fetches
 let commitFetchControllerA: AbortController | null = null;
 let commitFetchControllerB: AbortController | null = null;
+
+// Per-side search chip handles for cleanup
+let searchChipsA: SearchChipsHandle | null = null;
+let searchChipsB: SearchChipsHandle | null = null;
 
 /** Module-level reference to the metric selector container for re-rendering. */
 let metricContainerRef: HTMLElement | null = null;
@@ -54,6 +59,8 @@ export function initSelection(
   cachedFieldsB = [];
   if (commitFetchControllerA) { commitFetchControllerA.abort(); commitFetchControllerA = null; }
   if (commitFetchControllerB) { commitFetchControllerB.abort(); commitFetchControllerB = null; }
+  if (searchChipsA) { searchChipsA.destroy(); searchChipsA = null; }
+  if (searchChipsB) { searchChipsB.destroy(); searchChipsB = null; }
 }
 
 export function getMetricFields(): FieldInfo[] {
@@ -96,10 +103,10 @@ function getCommitDataForSide(side: 'a' | 'b') {
 }
 
 /**
- * Fetch commits filtered by machine for a side.
+ * Fetch commits filtered by params for a side.
  * Aborts any previous in-flight commit fetch for the same side.
  */
-async function fetchCommitsForMachine(side: 'a' | 'b', machine: string): Promise<void> {
+async function fetchCommitsForParams(side: 'a' | 'b', params: Record<string, string>): Promise<void> {
   const prev = side === 'a' ? commitFetchControllerA : commitFetchControllerB;
   if (prev) prev.abort();
   const ctrl = new AbortController();
@@ -111,7 +118,7 @@ async function fetchCommitsForMachine(side: 'a' | 'b', machine: string): Promise
   if (!suite) return;
 
   try {
-    const commits = await getCommits(suite, { machine, signal: ctrl.signal });
+    const commits = await getCommits(suite, { params, signal: ctrl.signal });
     if (side === 'a') cachedCommitsA = commits;
     else cachedCommitsB = commits;
   } catch (err: unknown) {
@@ -129,7 +136,7 @@ function getComboboxContext(): ComboboxContext {
       return selection.suite;
     },
     getSideState,
-    fetchCommitsForMachine,
+    fetchCommitsForParams,
   };
 }
 
@@ -158,14 +165,14 @@ function createRunsPanel(side: 'a' | 'b', container: HTMLElement, setSide: (part
 
   const { selection: sideState } = getSideState(side);
 
-  if (!sideState.suite || !sideState.commit || !sideState.machine) {
+  if (!sideState.suite || !sideState.commit || Object.keys(sideState.params).length === 0) {
     container.replaceChildren(el('span', { class: 'runs-hint' }, 'Select a commit first'));
     return;
   }
 
   container.replaceChildren(el('span', { class: 'runs-loading' }, 'Loading runs...'));
 
-  getRuns(sideState.suite, { machine: sideState.machine, commit: sideState.commit })
+  getRuns(sideState.suite, { params: sideState.params, commit: sideState.commit })
     .then(runs => {
       // A newer createRunsPanel call was made while we were waiting —
       // discard this stale result to avoid overwriting fresh data.
@@ -263,8 +270,8 @@ function createSampleAggSelect(): HTMLSelectElement {
 
 /**
  * Fetch fields and suite info for a side when its suite changes.
- * Commits are NOT fetched here — they are fetched per-machine when a
- * machine is selected (via fetchCommitsForMachine).
+ * Commits are NOT fetched here — they are fetched per-params when
+ * parameter chips are set (via fetchCommitsForParams).
  */
 export async function fetchSideData(
   side: 'a' | 'b',
@@ -272,7 +279,7 @@ export async function fetchSideData(
 ): Promise<void> {
   const version = side === 'a' ? ++suiteLoadVersionA : ++suiteLoadVersionB;
 
-  // Clear stale commits from a previous suite/machine selection
+  // Clear stale commits from a previous suite/params selection
   if (side === 'a') cachedCommitsA = [];
   else cachedCommitsB = [];
 
@@ -359,7 +366,7 @@ export function renderSelectionPanel(root: HTMLElement): void {
     }
     suiteSelect.addEventListener('change', () => {
       const newSuite = suiteSelect.value;
-      setSide({ suite: newSuite, machine: '', commit: '', runs: [] });
+      setSide({ suite: newSuite, params: {}, commit: '', runs: [] });
       if (newSuite) {
         fetchSideData(side, newSuite);
       } else {
@@ -378,11 +385,63 @@ export function renderSelectionPanel(root: HTMLElement): void {
     const ctx = getComboboxContext();
     const refreshRuns = () => createRunsPanel(side, runsContainer, setSide);
 
-    // Machine
-    sideDiv.append(el('label', {}, 'Machine'));
-    sideDiv.append(createMachineCombobox(side, setSide, refreshRuns, ctx));
+    // Parameter search chips
+    sideDiv.append(el('label', {}, 'Parameters'));
+    const searchChipsHandle = createSearchChips({
+      testsuite: sideState.suite,
+      initialChips: paramsToChips(sideState.params),
+      disabled: !sideState.suite,
+      placeholder: 'Add parameter filter...',
+      onChange: async (chips) => {
+        const params = chipsToParams(chips);
+        setSide({ params, commit: '', runs: [] });
 
-    // Order
+        if (Object.keys(params).length > 0) {
+          updateCommitInputState(side, 'loading');
+          await fetchCommitsForParams(side, params);
+          // Clear commit if it's no longer valid for these params
+          const { cachedCommitValues } = getCommitDataForSide(side);
+          const { selection: current } = getSideState(side);
+          if (current.commit && !cachedCommitValues.includes(current.commit)) {
+            setSide({ commit: '' });
+          }
+          updateCommitInputState(side, 'ready');
+          const { selection: updated } = getSideState(side);
+          if (updated.commit) {
+            const picker = side === 'a' ? (await import('./combobox')).getCommitPicker('a') : (await import('./combobox')).getCommitPicker('b');
+            picker?.setValue(updated.commit);
+          }
+        } else {
+          updateCommitInputState(side, 'no-params', '');
+        }
+        refreshRuns();
+      },
+    });
+
+    if (side === 'a') {
+      searchChipsA?.destroy();
+      searchChipsA = searchChipsHandle;
+    } else {
+      searchChipsB?.destroy();
+      searchChipsB = searchChipsHandle;
+    }
+
+    sideDiv.append(searchChipsHandle.element);
+
+    // If params are set from URL, trigger commit fetch
+    if (Object.keys(sideState.params).length > 0) {
+      fetchCommitsForParams(side, sideState.params)
+        .then(() => {
+          updateCommitInputState(side, 'ready');
+          if (sideState.commit) {
+            refreshCommitDisplay(side, sideState.commit);
+          }
+          refreshRuns();
+        })
+        .catch(() => {});
+    }
+
+    // Commit
     sideDiv.append(el('label', {}, 'Commit'));
     sideDiv.append(createCommitCombobox(side, setSide, refreshRuns, ctx));
 

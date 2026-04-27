@@ -4,10 +4,10 @@ import { buildPlotlyData, createTimeSeriesChart } from '../../../pages/graph/tim
 import type { TimeSeriesTrace, TimeSeriesChartOptions } from '../../../pages/graph/time-series-chart';
 import { TRACE_SEP } from '../../../utils';
 
-function makeTrace(name: string, points: Array<{ commit: string; value: number }>, machine = 'm1'): TimeSeriesTrace {
+function makeTrace(name: string, points: Array<{ commit: string; value: number }>, trace = 'm1'): TimeSeriesTrace {
   return {
     testName: name,
-    machine,
+    trace,
     points: points.map(p => ({ ...p, runCount: 1, submitted_at: null })),
   };
 }
@@ -51,7 +51,7 @@ describe('buildPlotlyData', () => {
     expect(trace.customdata[0][0]).toBe('100');             // commit
     expect(trace.customdata[0][1]).toBe(`test-A${TRACE_SEP}m1`);     // traceName
     expect(trace.customdata[0][4]).toBe('test-A');          // testName
-    expect(trace.customdata[0][5]).toBe('m1');              // machine
+    expect(trace.customdata[0][5]).toBe('m1');              // trace
   });
 
   it('generates reference commit traces with hover', () => {
@@ -574,10 +574,10 @@ describe('createTimeSeriesChart', () => {
 
     createTimeSeriesChart(container, {
       traces: [
-        { testName: 'test-A', machine: 'm1', color: '#1f77b4', points: [{ commit: '100', value: 2.0, runCount: 3, submitted_at: null }] },
+        { testName: 'test-A', trace: 'm1', color: '#1f77b4', points: [{ commit: '100', value: 2.0, runCount: 3, submitted_at: null }] },
       ],
       yAxisLabel: 'metric',
-      getRawValues: (_test, _machine, _commit) => [1.0, 2.0, 3.0],
+      getRawValues: (_test, _trace, _commit) => [1.0, 2.0, 3.0],
     });
 
     await new Promise(r => setTimeout(r, 0));
@@ -610,7 +610,7 @@ describe('createTimeSeriesChart', () => {
 
     createTimeSeriesChart(container, {
       traces: [
-        { testName: 'test-A', machine: 'm1', color: '#1f77b4', points: [{ commit: '100', value: 1.0, runCount: 1, submitted_at: null }] },
+        { testName: 'test-A', trace: 'm1', color: '#1f77b4', points: [{ commit: '100', value: 1.0, runCount: 1, submitted_at: null }] },
       ],
       yAxisLabel: 'metric',
       getRawValues: () => [1.0],
@@ -635,7 +635,7 @@ describe('createTimeSeriesChart', () => {
 
     createTimeSeriesChart(container, {
       traces: [
-        { testName: 'test-A', machine: 'm1', color: '#1f77b4', points: [{ commit: '100', value: 2.0, runCount: 3, submitted_at: null }] },
+        { testName: 'test-A', trace: 'm1', color: '#1f77b4', points: [{ commit: '100', value: 2.0, runCount: 3, submitted_at: null }] },
       ],
       yAxisLabel: 'metric',
       getRawValues: () => [1.0, 2.0, 3.0],
@@ -666,7 +666,7 @@ describe('createTimeSeriesChart', () => {
 
     createTimeSeriesChart(container, {
       traces: [
-        { testName: 'test-A', machine: 'm1', color: '#1f77b4', points: [{ commit: '100', value: 2.0, runCount: 3, submitted_at: null }] },
+        { testName: 'test-A', trace: 'm1', color: '#1f77b4', points: [{ commit: '100', value: 2.0, runCount: 3, submitted_at: null }] },
       ],
       yAxisLabel: 'metric',
       // no getRawValues

@@ -3,6 +3,7 @@
 
 import type { PageModule, RouteParams } from '../../router';
 import type { AggFn } from '../../types';
+import { encodeParamQuery, decodeParamQuery } from '../../types';
 import { fetchOneCursorPage, postOneCursorPage, apiUrl, getTestSuiteInfoCached } from '../../api';
 import { el, getAggFn, TRACE_SEP, resolveDisplayMap, matchesFilter } from '../../utils';
 import { getTestsuites } from '../../router';
@@ -26,7 +27,7 @@ import {
 // ---------------------------------------------------------------------------
 
 let cache = new GraphDataCache({ apiUrl, fetchOneCursorPage, postOneCursorPage });
-/** Full unfiltered test list across all machines (for stable color assignment). */
+/** Full unfiltered test list across all traces (for stable color assignment). */
 let allDiscoveredTests: string[] = [];
 /** Filtered test list (for table display). */
 let allMatchingTests: string[] = [];
@@ -34,8 +35,8 @@ let allMatchingTests: string[] = [];
 let selectedTests = new Set<string>();
 /** Current suite for cache scope. */
 let currentSuite = '';
-/** Selected machines. */
-let machines: string[] = [];
+/** Selected traces (each is an encoded param query string, e.g. "compiler:clang-21,os:linux"). */
+let traces: string[] = [];
 /** Current metric. */
 let metric = '';
 /** Resolved display values for baseline commits (survives unmount/remount). */
@@ -62,7 +63,12 @@ export const graphPage: PageModule = {
     // ---- Parse URL state ----
     const state = decodeGraphState(window.location.search);
     currentSuite = state.suite;
-    machines = state.machines;
+    // Build traces from URL state.  Legacy ?machine=X params become single-param
+    // traces ("machine:hostname"); new ?trace= params are used directly.
+    traces = [
+      ...state.traces.map(encodeParamQuery),
+      ...state.machines.map(m => `machine:${m}`),
+    ];
     metric = state.metric;
     let testFilter = state.testFilter;
     let runAgg = state.runAgg;
@@ -81,7 +87,7 @@ export const graphPage: PageModule = {
     let suiteGeneration = 0;
     let plotGeneration = 0;
     let selectionAbort: AbortController | null = null;
-    const machineAborts = new Map<string, AbortController>();
+    const traceAborts = new Map<string, AbortController>();
     let globalAbort = new AbortController();
     let commitFields: Array<{ name: string; display?: boolean }> = [];
     let currentDisplayMap = new Map<string, string>();
@@ -95,23 +101,18 @@ export const graphPage: PageModule = {
 
     function getSignal(): AbortSignal { return globalAbort.signal; }
 
-    function getMachineSignal(machine: string): AbortSignal {
-      let ctrl = machineAborts.get(machine);
+    function getTraceSignal(trace: string): AbortSignal {
+      let ctrl = traceAborts.get(trace);
       if (!ctrl || ctrl.signal.aborted) {
         ctrl = new AbortController();
-        machineAborts.set(machine, ctrl);
+        traceAborts.set(trace, ctrl);
       }
       return ctrl.signal;
     }
 
-    function abortMachine(machine: string): void {
-      const ctrl = machineAborts.get(machine);
-      if (ctrl) { ctrl.abort(); machineAborts.delete(machine); }
-    }
-
     function abortInFlight(): void {
-      for (const [, ctrl] of machineAborts) ctrl.abort();
-      machineAborts.clear();
+      for (const [, ctrl] of traceAborts) ctrl.abort();
+      traceAborts.clear();
       if (selectionAbort) { selectionAbort.abort(); selectionAbort = null; }
     }
 
@@ -125,7 +126,8 @@ export const graphPage: PageModule = {
     function updateUrlState(): void {
       replaceGraphUrl({
         suite: currentSuite,
-        machines,
+        traces: traces.map(t => decodeParamQuery(t)),
+        machines: [],
         metric,
         testFilter,
         runAgg,
@@ -185,8 +187,8 @@ export const graphPage: PageModule = {
     const suites = getTestsuites();
     controlsHandle = createControls(state, suites, {
       onSuiteChange: handleSuiteChange,
-      onMachineAdd: handleMachineAdd,
-      onMachineRemove: handleMachineRemove,
+      onTraceAdd: handleTraceAdd,
+      onTraceRemove: handleTraceRemove,
       onMetricChange: handleMetricChange,
       onFilterChange: handleFilterChange,
       onRunAggChange(agg: AggFn) {
@@ -207,6 +209,11 @@ export const graphPage: PageModule = {
     });
     container.append(controlsHandle.getElement());
 
+    // Render initial trace chips (from URL state)
+    if (traces.length > 0) {
+      controlsHandle.updateTraceChips(traces.map(t => decodeParamQuery(t)));
+    }
+
     // ---- Baseline panel (embedded in controls row 1) ----
     baselinePanelHandle = createBaselinePanel(baselines, combinedDisplayMap(), suites, {
       onBaselineAdd: handleBaselineAdd,
@@ -214,8 +221,8 @@ export const graphPage: PageModule = {
       getCommitFields: (suite: string) => {
         return suite === currentSuite ? commitFields : [];
       },
-      getBaselineCommits: (suite, machine, signal) =>
-        cache.getBaselineCommits(suite, machine, signal),
+      getBaselineCommits: (suite, params, signal) =>
+        cache.getBaselineCommits(suite, JSON.stringify(params), signal),
     });
     controlsHandle.embedInRow1(baselinePanelHandle.getElement());
 
@@ -232,8 +239,8 @@ export const graphPage: PageModule = {
         chartHandle.hoverTrace(null);
         return;
       }
-      // Highlight all machines' traces for this test
-      const traceNames = machines.map(m => `${testName}${TRACE_SEP}${m}`);
+      // Highlight all traces for this test
+      const traceNames = traces.map(t => `${testName}${TRACE_SEP}${t}`);
       chartHandle.hoverTrace(traceNames);
     });
 
@@ -252,7 +259,7 @@ export const graphPage: PageModule = {
 
     /** Full reconfigure: fetch scaffolds, discover tests, populate table. */
     async function doPlot(): Promise<void> {
-      if (!currentSuite || machines.length === 0 || !metric) return;
+      if (!currentSuite || traces.length === 0 || !metric) return;
 
       plotGeneration++;
       abortInFlight();
@@ -261,24 +268,24 @@ export const graphPage: PageModule = {
       const gen = plotGeneration;
 
       try {
-        // 1. Fetch scaffolds for all machines in parallel
-        await Promise.all(machines.map(m =>
-          cache.getScaffold(currentSuite, m, getMachineSignal(m)),
+        // 1. Fetch scaffolds for all traces in parallel
+        await Promise.all(traces.map(t =>
+          cache.getScaffold(currentSuite, t, getTraceSignal(t)),
         ));
         if (gen !== plotGeneration) return;
 
         progressEl.style.display = '';
 
-        // 2. Discover tests for ALL machines in parallel, then union
-        const perMachine = await Promise.all(machines.map(m =>
-          cache.discoverTests(currentSuite, m, metric, getMachineSignal(m)),
+        // 2. Discover tests for ALL traces in parallel, then union
+        const perTrace = await Promise.all(traces.map(t =>
+          cache.discoverTests(currentSuite, t, metric, getTraceSignal(t)),
         ));
         if (gen !== plotGeneration) return;
         progressEl.style.display = 'none';
 
         // Union all test lists, sorted alphabetically
         const testSet = new Set<string>();
-        for (const list of perMachine) {
+        for (const list of perTrace) {
           for (const name of list) testSet.add(name);
         }
         allDiscoveredTests = [...testSet].sort((a, b) => a.localeCompare(b));
@@ -286,8 +293,8 @@ export const graphPage: PageModule = {
         // Cache color map (stable: only changes when allDiscoveredTests changes)
         cachedColorMap = buildColorMap(allDiscoveredTests);
 
-        // Cache scaffold union (only changes when machines or scaffolds change)
-        const union = cache.scaffoldUnion(currentSuite, machines, commitFields);
+        // Cache scaffold union (only changes when traces or scaffolds change)
+        const union = cache.scaffoldUnion(currentSuite, traces, commitFields);
         if (union) {
           currentDisplayMap = union.displayMap;
           cachedCategoryOrder = union.commits;
@@ -335,7 +342,7 @@ export const graphPage: PageModule = {
     function handleFilterChange(filter: string): void {
       testFilter = filter;
       updateUrlState();
-      if (machines.length === 0 || !metric) return;
+      if (traces.length === 0 || !metric) return;
 
       applyFilter();
 
@@ -364,10 +371,10 @@ export const graphPage: PageModule = {
       selectedTests = newSelected;
       const gen = plotGeneration;
 
-      // Identify uncached tests (check all machines, not just the first)
+      // Identify uncached tests (check all traces, not just the first)
       const uncached: string[] = [];
       for (const t of selectedTests) {
-        if (machines.some(m => !cache.isComplete(currentSuite, m, metric, t))) {
+        if (traces.some(tr => !cache.isComplete(currentSuite, tr, metric, t))) {
           uncached.push(t);
         }
       }
@@ -381,9 +388,9 @@ export const graphPage: PageModule = {
         renderFromSelection();
 
         try {
-          // Fetch data for each machine in parallel
-          await Promise.all(machines.map(m =>
-            cache.ensureTestData(currentSuite, m, metric, uncached, {
+          // Fetch data for each trace in parallel
+          await Promise.all(traces.map(t =>
+            cache.ensureTestData(currentSuite, t, metric, uncached, {
               signal: selSignal,
               onProgress: () => scheduleChartUpdate(),
             }),
@@ -394,7 +401,7 @@ export const graphPage: PageModule = {
 
           // Fetch baseline data for newly-selected tests (in parallel)
           await Promise.all(baselines.map(bl =>
-            cache.getBaselineData(bl.suite, bl.machine, bl.commit, metric, uncached, selSignal),
+            cache.getBaselineData(bl.suite, JSON.stringify(bl.params), bl.commit, metric, uncached, selSignal),
           ));
         } catch (e) {
           if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -420,21 +427,21 @@ export const graphPage: PageModule = {
         if (!currentSuite || !metric) return;
 
         // Build traces from cache
-        const { traces, rawValuesIndex } = buildChartData({
+        const { traces: chartTraces, rawValuesIndex } = buildChartData({
           selectedTests,
-          machines,
+          traces,
           metric,
           runAgg,
           sampleAgg,
-          readCachedTestData: (s, m, met, t) => cache.readCachedTestData(s, m, met, t),
+          readCachedTestData: (s, t, met, test) => cache.readCachedTestData(s, t, met, test),
           suite: currentSuite,
           colorMap: cachedColorMap,
         });
 
         // Build baselines
         const pinnedBaselines = buildBaselinesFromData(
-          baselines,
-          (s, m, c, met) => cache.readCachedBaselineData(s, m, c, met),
+          baselines.map(bl => ({ suite: bl.suite, trace: JSON.stringify(bl.params), commit: bl.commit })),
+          (s, t, c, met) => cache.readCachedBaselineData(s, t, c, met),
           metric,
           getAggFn(runAgg),
           combinedDisplayMap(),        );
@@ -450,7 +457,7 @@ export const graphPage: PageModule = {
 
         // Use cached scaffold (computed in doPlot, doesn't change during loading)
         const chartOpts = {
-          traces,
+          traces: chartTraces,
           yAxisLabel: metric,
           baselines: pinnedBaselines.length > 0 ? pinnedBaselines : undefined,
           categoryOrder: cachedCategoryOrder,
@@ -506,7 +513,7 @@ export const graphPage: PageModule = {
       cache.clearSuite();
 
       currentSuite = suite;
-      machines = [];
+      traces = [];
       metric = '';
       testFilter = '';
       allDiscoveredTests = [];
@@ -525,7 +532,7 @@ export const graphPage: PageModule = {
       progressEl.style.display = 'none';
 
       controlsHandle?.setSuite(suite);
-      controlsHandle?.updateMachineChips([]);
+      controlsHandle?.updateTraceChips([]);
       controlsHandle?.setEnabled(!!suite);
       controlsHandle?.setRegressionMode('off');
       baselinePanelHandle?.reset();
@@ -537,24 +544,38 @@ export const graphPage: PageModule = {
       updateUrlState();
     }
 
-    function handleMachineAdd(name: string): void {
-      if (machines.includes(name)) return;
-      machines.push(name);
-      controlsHandle?.updateMachineChips(machines);
+    function handleTraceAdd(params: Record<string, string>): void {
+      const encoded = encodeParamQuery(params);
+      if (!encoded || traces.includes(encoded)) return;
+      traces.push(encoded);
+      controlsHandle?.updateTraceChips(traces.map(t => decodeParamQuery(t)));
       updateUrlState();
       if (metric) doPlot();
     }
 
-    function handleMachineRemove(name: string): void {
-      abortMachine(name);
-      machines = machines.filter(m => m !== name);
-      controlsHandle?.updateMachineChips(machines);
+    function handleTraceRemove(params: Record<string, string>): void {
+      const encoded = encodeParamQuery(params);
+      const idx = traces.indexOf(encoded);
+      if (idx < 0) return;
+      // Abort any in-flight fetches for this trace
+      const ctrl = traceAborts.get(encoded);
+      if (ctrl) { ctrl.abort(); traceAborts.delete(encoded); }
+      traces.splice(idx, 1);
+      // Remove cached data for this trace
+      cache.clearSuite();
+      controlsHandle?.updateTraceChips(traces.map(t => decodeParamQuery(t)));
       updateUrlState();
-      if (machines.length > 0 && metric) {
+      if (traces.length > 0 && metric) {
         doPlot();
       } else {
-        progressEl.style.display = 'none';
-        renderFromSelection();
+        // No traces left -- clear chart
+        allDiscoveredTests = [];
+        allMatchingTests = [];
+        selectedTests = new Set();
+        if (chartHandle) { chartHandle.destroy(); chartHandle = null; }
+        if (tableHandle) { tableHandle.destroy(); tableHandle = null; }
+        chartContainer.replaceChildren(el('p', { class: 'no-chart-data' }, 'No data to plot.'));
+        tableContainer.replaceChildren();
       }
     }
 
@@ -569,11 +590,11 @@ export const graphPage: PageModule = {
       if (tableHandle) { tableHandle.destroy(); tableHandle = null; }
       tableContainer.replaceChildren();
       progressEl.style.display = 'none';
-      if (machines.length > 0 && metric) doPlot();
+      if (traces.length > 0 && metric) doPlot();
     }
 
     function handleBaselineAdd(bl: BaselineRef): void {
-      if (baselines.some(b => b.suite === bl.suite && b.machine === bl.machine && b.commit === bl.commit)) return;
+      if (baselines.some(b => b.suite === bl.suite && JSON.stringify(b.params) === JSON.stringify(bl.params) && b.commit === bl.commit)) return;
       baselines.push(bl);
       baselinePanelHandle?.updateChips(baselines, combinedDisplayMap());
       updateUrlState();
@@ -582,7 +603,7 @@ export const graphPage: PageModule = {
 
       // Fetch baseline data for current selection
       if (metric && selectedTests.size > 0) {
-        cache.getBaselineData(bl.suite, bl.machine, bl.commit, metric, [...selectedTests], getSignal())
+        cache.getBaselineData(bl.suite, JSON.stringify(bl.params), bl.commit, metric, [...selectedTests], getSignal())
           .then(() => scheduleChartUpdate())
           .catch(e => {
             if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -591,7 +612,7 @@ export const graphPage: PageModule = {
     }
 
     function handleBaselineRemove(bl: BaselineRef): void {
-      const idx = baselines.findIndex(b => b.suite === bl.suite && b.machine === bl.machine && b.commit === bl.commit);
+      const idx = baselines.findIndex(b => b.suite === bl.suite && JSON.stringify(b.params) === JSON.stringify(bl.params) && b.commit === bl.commit);
       if (idx >= 0) baselines.splice(idx, 1);
       baselinePanelHandle?.updateChips(baselines, combinedDisplayMap());
       updateUrlState();
@@ -639,7 +660,7 @@ export const graphPage: PageModule = {
     // ---- Initial load ----
     if (currentSuite) {
       loadSuiteFields(currentSuite).then(() => {
-        if (machines.length > 0 && metric) doPlot();
+        if (traces.length > 0 && metric) doPlot();
       });
     }
 
@@ -655,7 +676,7 @@ export const graphPage: PageModule = {
       if (cleanupChartDblClick) { cleanupChartDblClick(); cleanupChartDblClick = null; }
       if (pendingChartRAF !== null) { cancelAnimationFrame(pendingChartRAF); pendingChartRAF = null; }
       loadingTests = new Set();
-      // Preserve: cache, allDiscoveredTests, allMatchingTests, selectedTests, machines, metric, currentSuite
+      // Preserve: cache, allDiscoveredTests, allMatchingTests, selectedTests, traces, metric, currentSuite
     };
   },
 

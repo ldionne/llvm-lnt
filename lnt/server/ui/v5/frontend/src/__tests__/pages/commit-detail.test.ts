@@ -47,9 +47,9 @@ const mockCommit: CommitDetail = {
 };
 
 const mockRuns: RunInfo[] = [
-  { uuid: 'aaaa-1111', machine: 'clang-x86', commit: '100', submitted_at: '2026-01-01T10:00:00Z' },
-  { uuid: 'bbbb-2222', machine: 'clang-x86', commit: '100', submitted_at: '2026-01-01T11:00:00Z' },
-  { uuid: 'cccc-3333', machine: 'gcc-arm', commit: '100', submitted_at: '2026-01-01T12:00:00Z' },
+  { uuid: 'aaaa-1111', commit: '100', submitted_at: '2026-01-01T10:00:00Z', run_parameters: { compiler: 'clang', arch: 'x86' } },
+  { uuid: 'bbbb-2222', commit: '100', submitted_at: '2026-01-01T11:00:00Z', run_parameters: { compiler: 'clang', arch: 'x86' } },
+  { uuid: 'cccc-3333', commit: '100', submitted_at: '2026-01-01T12:00:00Z', run_parameters: { compiler: 'gcc', arch: 'arm' } },
 ];
 
 describe('commitDetailPage', () => {
@@ -323,163 +323,30 @@ describe('commitDetailPage', () => {
     commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
 
     await vi.waitFor(() => {
-      // 3 runs across 2 machines
-      expect(container.textContent).toContain('3 runs across 2 machines');
+      // 3 runs
+      expect(container.textContent).toContain('3 run');
     });
   });
 
-  it('renders runs table with Machine, Run UUID, Submitted columns', async () => {
+  it('renders runs table with Run UUID, Parameters, Submitted columns', async () => {
     commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
 
     await vi.waitFor(() => {
       const headers = Array.from(container.querySelectorAll('th')).map(h => h.textContent);
-      expect(headers).toContain('Machine');
       expect(headers).toContain('Run UUID');
+      expect(headers).toContain('Parameters');
       expect(headers).toContain('Submitted');
     });
   });
 
-  it('machine and run links use suite-scoped hrefs', async () => {
+  it('run links use suite-scoped hrefs', async () => {
     commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
 
     await vi.waitFor(() => {
-      const machineLink = container.querySelector('a[href*="/machines/"]') as HTMLAnchorElement;
-      expect(machineLink).toBeTruthy();
-      expect(machineLink.href).toContain('/v5/nts/machines/');
-
       const runLink = container.querySelector('a[href*="/runs/"]') as HTMLAnchorElement;
       expect(runLink).toBeTruthy();
       expect(runLink.href).toContain('/v5/nts/runs/');
     });
-  });
-
-  it('machine filter filters runs by machine name after 200ms debounce', async () => {
-    commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
-
-    await vi.waitFor(() => {
-      expect(container.querySelector('table')).toBeTruthy();
-    });
-
-    const filterInput = container.querySelector('.test-filter-input') as HTMLInputElement;
-    filterInput.value = 'gcc';
-    filterInput.dispatchEvent(new Event('input'));
-
-    // Advance past debounce
-    vi.advanceTimersByTime(200);
-
-    await vi.waitFor(() => {
-      // Should only show gcc-arm runs (1 of 3)
-      const rows = container.querySelectorAll('tbody tr');
-      expect(rows).toHaveLength(1);
-    });
-  });
-
-  it('filtered summary shows "X of Y runs across A of B machines"', async () => {
-    commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
-
-    await vi.waitFor(() => {
-      expect(container.querySelector('table')).toBeTruthy();
-    });
-
-    const filterInput = container.querySelector('.test-filter-input') as HTMLInputElement;
-    filterInput.value = 'gcc';
-    filterInput.dispatchEvent(new Event('input'));
-    vi.advanceTimersByTime(200);
-
-    await vi.waitFor(() => {
-      expect(container.textContent).toContain('1 of 3 run');
-      expect(container.textContent).toContain('1 of 2 machine');
-    });
-  });
-
-  it('shows "No runs matching filter." when filter matches nothing', async () => {
-    commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
-
-    await vi.waitFor(() => {
-      expect(container.querySelector('table')).toBeTruthy();
-    });
-
-    const filterInput = container.querySelector('.test-filter-input') as HTMLInputElement;
-    filterInput.value = 'nonexistent';
-    filterInput.dispatchEvent(new Event('input'));
-    vi.advanceTimersByTime(200);
-
-    await vi.waitFor(() => {
-      expect(container.textContent).toContain('No runs matching filter.');
-    });
-  });
-
-  it('regex filter via re: prefix filters machines', async () => {
-    commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
-
-    await vi.waitFor(() => {
-      expect(container.querySelector('table')).toBeTruthy();
-    });
-
-    const filterInput = container.querySelector('.test-filter-input') as HTMLInputElement;
-    filterInput.value = 're:clang.*x86';
-    filterInput.dispatchEvent(new Event('input'));
-    vi.advanceTimersByTime(200);
-
-    await vi.waitFor(() => {
-      const rows = container.querySelectorAll('tbody tr');
-      expect(rows.length).toBeGreaterThan(0);
-      for (const row of rows) {
-        expect(row.textContent).toMatch(/clang.*x86/i);
-      }
-    });
-  });
-
-  it('invalid regex shows filter-invalid class on input', async () => {
-    commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
-
-    await vi.waitFor(() => {
-      expect(container.querySelector('table')).toBeTruthy();
-    });
-
-    const filterInput = container.querySelector('.test-filter-input') as HTMLInputElement;
-    filterInput.value = 're:invalid[';
-    filterInput.dispatchEvent(new Event('input'));
-
-    expect(filterInput.classList.contains('filter-invalid')).toBe(true);
-
-    filterInput.value = 're:valid.*';
-    filterInput.dispatchEvent(new Event('input'));
-
-    expect(filterInput.classList.contains('filter-invalid')).toBe(false);
-  });
-
-  it('shows regex badge when typing re: prefix', async () => {
-    commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
-
-    await vi.waitFor(() => {
-      expect(container.querySelector('table')).toBeTruthy();
-    });
-
-    const filterInput = container.querySelector('.test-filter-input') as HTMLInputElement;
-    filterInput.value = 're:clang';
-    filterInput.dispatchEvent(new Event('input'));
-
-    const badge = container.querySelector('.filter-regex-badge');
-    expect(badge).toBeTruthy();
-    expect(badge!.textContent).toBe('regex');
-    expect(badge!.classList.contains('filter-regex-badge-invalid')).toBe(false);
-  });
-
-  it('regex badge shows invalid state on bad regex', async () => {
-    commitDetailPage.mount(container, { testsuite: 'nts', value: '100' });
-
-    await vi.waitFor(() => {
-      expect(container.querySelector('table')).toBeTruthy();
-    });
-
-    const filterInput = container.querySelector('.test-filter-input') as HTMLInputElement;
-    filterInput.value = 're:invalid[';
-    filterInput.dispatchEvent(new Event('input'));
-
-    const badge = container.querySelector('.filter-regex-badge');
-    expect(badge).toBeTruthy();
-    expect(badge!.classList.contains('filter-regex-badge-invalid')).toBe(true);
   });
 
   it('shows error banner on initial load failure', async () => {

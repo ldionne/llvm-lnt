@@ -9,7 +9,6 @@ import './style.css';
 // Page modules
 import { homePage } from './pages/home';
 import { testSuitesPage } from './pages/test-suites';
-import { machineDetailPage } from './pages/machine-detail';
 import { runDetailPage } from './pages/run-detail';
 import { commitDetailPage } from './pages/commit-detail';
 import { graphPage } from './pages/graph';
@@ -50,7 +49,6 @@ function init(): void {
       },
     };
     addRoute('/', suiteRedirectPage);
-    addRoute('/machines/:name', machineDetailPage);
     addRoute('/runs/:uuid', runDetailPage);
     addRoute('/commits/:value', commitDetailPage);
     addRoute('/regressions/:uuid', regressionDetailPage);

@@ -1,4 +1,5 @@
 import type { AggFn, AppState, NoiseConfig, NoiseKnob, SideSelection, SortCol, SortDir } from './types';
+import { encodeParamQuery, decodeParamQuery } from './types';
 
 const NOISE_DEFAULTS: NoiseConfig = {
   pct:   { enabled: false, value: 1 },
@@ -7,8 +8,8 @@ const NOISE_DEFAULTS: NoiseConfig = {
 };
 
 const DEFAULTS: AppState = {
-  sideA: { suite: '', commit: '', machine: '', runs: [], runAgg: 'median' },
-  sideB: { suite: '', commit: '', machine: '', runs: [], runAgg: 'median' },
+  sideA: { suite: '', commit: '', params: {}, runs: [], runAgg: 'median' },
+  sideB: { suite: '', commit: '', params: {}, runs: [], runAgg: 'median' },
   metric: '',
   sampleAgg: 'median',
   noiseConfig: structuredClone(NOISE_DEFAULTS),
@@ -65,14 +66,14 @@ function parseAgg(v: string | null): AggFn | undefined {
 function decodeSide(p: URLSearchParams, suffix: string): SideSelection | undefined {
   const suite = p.get(`suite_${suffix}`);
   const commit = p.get(`commit_${suffix}`);
-  const machine = p.get(`machine_${suffix}`);
+  const paramsStr = p.get(`params_${suffix}`);
   const runs = p.get(`runs_${suffix}`);
   const runAgg = parseAgg(p.get(`run_agg_${suffix}`));
-  if (suite || commit || machine || runs || runAgg) {
+  if (suite || commit || paramsStr || runs || runAgg) {
     return {
       suite: suite || '',
       commit: commit || '',
-      machine: machine || '',
+      params: paramsStr ? decodeParamQuery(paramsStr) : {},
       runs: runs ? runs.split(',').filter(Boolean) : [],
       runAgg: runAgg || 'median',
     };
@@ -83,7 +84,8 @@ function decodeSide(p: URLSearchParams, suffix: string): SideSelection | undefin
 function encodeSide(p: URLSearchParams, side: SideSelection, suffix: string): void {
   if (side.suite) p.set(`suite_${suffix}`, side.suite);
   if (side.commit) p.set(`commit_${suffix}`, side.commit);
-  if (side.machine) p.set(`machine_${suffix}`, side.machine);
+  const paramsStr = encodeParamQuery(side.params);
+  if (paramsStr) p.set(`params_${suffix}`, paramsStr);
   if (side.runs.length) p.set(`runs_${suffix}`, side.runs.join(','));
   if (side.runAgg !== 'median') p.set(`run_agg_${suffix}`, side.runAgg);
 }

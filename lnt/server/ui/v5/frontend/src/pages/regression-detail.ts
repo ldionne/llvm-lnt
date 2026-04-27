@@ -6,7 +6,7 @@ import type { RegressionDetail as RegressionDetailType, RegressionIndicator, Reg
 import {
   getRegression, updateRegression, deleteRegression,
   addRegressionIndicators, removeRegressionIndicators,
-  getFields, getMachines, getTests, getToken, authErrorMessage,
+  getFields, getRuns, getTests, getToken, authErrorMessage,
   getTestSuiteInfoCached,
   getCommit,
 } from '../api';
@@ -428,7 +428,7 @@ export const regressionDetailPage: PageModule = {
       }) as HTMLInputElement;
       indicatorFilterDiv.append(filterInput);
 
-      const allMachines = new Set(regression.indicators.map(i => i.machine).filter(Boolean));
+      const allRunUuids = new Set(regression.indicators.map(i => i.run_uuid).filter(Boolean));
       const allTests = new Set(regression.indicators.map(i => i.test).filter(Boolean));
       const allMetrics = new Set(regression.indicators.map(i => i.metric));
 
@@ -436,7 +436,7 @@ export const regressionDetailPage: PageModule = {
         const q = filterInput.value.trim();
         if (!q) return regression.indicators;
         return regression.indicators.filter(ind =>
-          matchesFilter(ind.machine ?? '', q) ||
+          matchesFilter(ind.run_uuid ?? '', q) ||
           matchesFilter(ind.test ?? '', q) ||
           matchesFilter(ind.metric, q),
         );
@@ -448,16 +448,16 @@ export const regressionDetailPage: PageModule = {
 
       function updateHeading(filtered: RegressionIndicator[]): void {
         if (filterInput.value.trim() && filtered.length < regression.indicators.length) {
-          const filtMachines = new Set(filtered.map(i => i.machine).filter(Boolean));
+          const filtRunUuids = new Set(filtered.map(i => i.run_uuid).filter(Boolean));
           const filtTests = new Set(filtered.map(i => i.test).filter(Boolean));
           const filtMetrics = new Set(filtered.map(i => i.metric));
           indicatorsHeading.textContent =
             `Indicators (showing ${filtTests.size} of ${plural(allTests.size, 'test')}` +
-            ` across ${filtMachines.size} of ${plural(allMachines.size, 'machine')}` +
+            ` across ${filtRunUuids.size} of ${plural(allRunUuids.size, 'run')}` +
             ` across ${filtMetrics.size} of ${plural(allMetrics.size, 'metric')})`;
         } else {
           indicatorsHeading.textContent =
-            `Indicators (${plural(allTests.size, 'test')} across ${plural(allMachines.size, 'machine')} across ${plural(allMetrics.size, 'metric')})`;
+            `Indicators (${plural(allTests.size, 'test')} across ${plural(allRunUuids.size, 'run')} across ${plural(allMetrics.size, 'metric')})`;
         }
       }
 
@@ -521,10 +521,10 @@ export const regressionDetailPage: PageModule = {
 
       columns.push(
         {
-          key: 'machine',
-          label: 'Machine',
-          render: (ind) => ind.machine
-            ? spaLink(ind.machine, `/machines/${encodeURIComponent(ind.machine)}`)
+          key: 'run_uuid',
+          label: 'Run',
+          render: (ind) => ind.run_uuid
+            ? spaLink(ind.run_uuid.slice(0, 8), `/runs/${encodeURIComponent(ind.run_uuid)}`)
             : el('span', { class: 'no-results' }, '(deleted)'),
         },
         {
@@ -541,16 +541,16 @@ export const regressionDetailPage: PageModule = {
           label: '',
           sortable: false,
           render: (ind) => {
-            if (!ind.machine || !ind.test) return el('span', {});
+            if (!ind.run_uuid || !ind.test) return el('span', {});
+            // Note: the link opens the graph page with metric and test filter
+            // pre-set, but the user must manually add a trace because the
+            // indicator response does not include the run's parameters needed
+            // to encode a trace= parameter.
             const qs = new URLSearchParams({
               suite: ts,
-              machine: ind.machine,
               metric: ind.metric,
               test_filter: ind.test,
             });
-            if (regression.commit) {
-              qs.set('commit', regression.commit);
-            }
             return agnosticLink('View on graph', `/graph?${qs.toString()}`);
           },
         },
@@ -697,38 +697,43 @@ export const regressionDetailPage: PageModule = {
         };
       }
 
-      // Machine selector (checkbox list with filter)
-      const selectedMachines = new Set<string>();
-      let allMachines: string[] = [];
-      const machineGroupAdd = el('div', { class: 'control-group' });
-      machineGroupAdd.append(el('label', {}, 'Machines'));
-      const machineFilterInput = el('input', {
+      // Run selector (we'll fetch runs for the regression's commit)
+      const selectedRuns = new Set<string>();
+      let allRunUuids: string[] = [];
+      const runGroupAdd = el('div', { class: 'control-group' });
+      runGroupAdd.append(el('label', {}, 'Runs'));
+      const runFilterInput = el('input', {
         type: 'text',
         class: 'combobox-input',
-        placeholder: 'Search machines...',
+        placeholder: 'Search runs...',
       }) as HTMLInputElement;
-      const machineListDiv = el('div', { class: 'checkbox-list-container' });
-      machineGroupAdd.append(machineFilterInput, machineListDiv);
-      selectorsDiv.append(machineGroupAdd);
+      const runListDiv = el('div', { class: 'checkbox-list-container' });
+      runGroupAdd.append(runFilterInput, runListDiv);
+      selectorsDiv.append(runGroupAdd);
 
-      const machineList = renderCheckboxFilterList({
-        container: machineListDiv,
-        filterInput: machineFilterInput,
-        allItems: () => allMachines,
-        selected: selectedMachines,
-        dataAttr: 'data-machine',
-        emptyHint: 'Loading machines...',
+      const runList = renderCheckboxFilterList({
+        container: runListDiv,
+        filterInput: runFilterInput,
+        allItems: () => allRunUuids,
+        selected: selectedRuns,
+        dataAttr: 'data-run',
+        emptyHint: 'Loading runs...',
         onChange: () => { refreshTests(); updatePreview(); },
       });
-      cleanupFns.push(machineList.destroy);
+      cleanupFns.push(runList.destroy);
 
-      getMachines(ts, { limit: 500 }, signal).then(result => {
-        allMachines = result.items.map(m => m.name);
-        machineList.rerender();
-      }).catch((e: unknown) => {
-        if (e instanceof DOMException && e.name === 'AbortError') return;
-        machineListDiv.replaceChildren(el('span', { class: 'error-banner' }, `Failed: ${e}`));
-      });
+      // Fetch runs for the regression's commit
+      if (regression.commit) {
+        getRuns(ts, { commit: regression.commit }, signal).then(result => {
+          allRunUuids = result.map(r => r.uuid);
+          runList.rerender();
+        }).catch((e: unknown) => {
+          if (e instanceof DOMException && e.name === 'AbortError') return;
+          runListDiv.replaceChildren(el('span', { class: 'error-banner' }, `Failed: ${e}`));
+        });
+      } else {
+        runListDiv.replaceChildren(el('span', { class: 'test-list-hint' }, 'Set a commit on the regression first'));
+      }
 
       // Test selector (checkbox list with filter)
       const selectedTests = new Set<string>();
@@ -758,10 +763,10 @@ export const regressionDetailPage: PageModule = {
       async function refreshTests(): Promise<void> {
         allTests = [];
         testListDiv.replaceChildren();
-        if (!selectedMetric || selectedMachines.size === 0) {
+        if (!selectedMetric || selectedRuns.size === 0) {
           selectedTests.clear();
           testListDiv.append(el('span', { class: 'test-list-hint' },
-            'Select metric and machines first'));
+            'Select metric and runs first'));
           updatePreview();
           return;
         }
@@ -771,9 +776,10 @@ export const regressionDetailPage: PageModule = {
 
         testListDiv.replaceChildren(el('span', { class: 'test-list-hint' }, 'Loading tests...'));
         try {
+          // Fetch tests available for each selected run
           const results = await Promise.all(
-            [...selectedMachines].map(machine =>
-              getTests(ts, { machine, metric: selectedMetric, limit: 500 }, fetchSignal)
+            [...selectedRuns].map(_runUuid =>
+              getTests(ts, { metric: selectedMetric, limit: 500 }, fetchSignal)
                 .then(r => r.items.map(t => t.name))
                 .catch((e: unknown) => {
                   if (e instanceof DOMException && e.name === 'AbortError') throw e;
@@ -796,7 +802,7 @@ export const regressionDetailPage: PageModule = {
       addPanelDiv.append(selectorsDiv);
 
       const previewDiv = el('div', { class: 'add-indicator-preview' });
-      const previewSpan = el('span', {}, 'Select metric, machine, and tests to add indicators');
+      const previewSpan = el('span', {}, 'Select metric, run, and tests to add indicators');
       previewDiv.append(previewSpan);
       addPanelDiv.append(previewDiv);
 
@@ -806,9 +812,9 @@ export const regressionDetailPage: PageModule = {
       addPanelDiv.append(addActionsDiv);
 
       function updatePreview(): void {
-        const count = selectedMachines.size * selectedTests.size;
-        if (!selectedMetric || selectedMachines.size === 0 || selectedTests.size === 0) {
-          previewSpan.textContent = 'Select metric, machines, and tests to add indicators';
+        const count = selectedRuns.size * selectedTests.size;
+        if (!selectedMetric || selectedRuns.size === 0 || selectedTests.size === 0) {
+          previewSpan.textContent = 'Select metric, runs, and tests to add indicators';
           addBtn.disabled = true;
         } else {
           previewSpan.textContent = `This will add ${count} indicator${count !== 1 ? 's' : ''}`;
@@ -817,13 +823,13 @@ export const regressionDetailPage: PageModule = {
       }
 
       addBtn.addEventListener('click', async () => {
-        if (!selectedMetric || selectedMachines.size === 0 || selectedTests.size === 0) return;
+        if (!selectedMetric || selectedRuns.size === 0 || selectedTests.size === 0) return;
         addBtn.disabled = true;
         addErrorDiv.replaceChildren();
 
-        const indicators = [...selectedMachines].flatMap(machine =>
+        const indicators = [...selectedRuns].flatMap(runUuid =>
           [...selectedTests].map(test => ({
-            machine,
+            run_uuid: runUuid,
             test,
             metric: selectedMetric,
           })),
@@ -834,8 +840,8 @@ export const regressionDetailPage: PageModule = {
           regression = updated;
           renderIndicators();
           // Reset panel to clean state
-          selectedMachines.clear();
-          machineList.rerender();
+          selectedRuns.clear();
+          runList.rerender();
           selectedMetric = '';
           const metricSelect = metricContainer.querySelector('select') as HTMLSelectElement | null;
           if (metricSelect) metricSelect.value = '';

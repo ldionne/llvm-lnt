@@ -1,9 +1,10 @@
-// pages/graph/baselines.ts — Baseline panel with cascading suite→machine→commit
+// pages/graph/baselines.ts — Baseline panel with cascading suite->params->commit
 // dropdowns and removable baseline chips.
 
 import { el } from '../../utils';
 import type { CommitSummary } from '../../types';
-import { renderMachineCombobox } from '../../components/machine-combobox';
+import { encodeParamQuery } from '../../types';
+import { createSearchChips, chipsToParams, type SearchChipsHandle } from '../../components/search-chips';
 import { createCommitPicker, type CommitPickerHandle } from '../../combobox';
 import { commitDisplayValue } from '../../utils';
 import type { BaselineRef } from './state';
@@ -25,7 +26,7 @@ export interface BaselinePanelCallbacks {
   onBaselineAdd(baseline: BaselineRef): void;
   onBaselineRemove(baseline: BaselineRef): void;
   getCommitFields(suite: string): Array<{ name: string; display?: boolean }>;
-  getBaselineCommits(suite: string, machine: string, signal?: AbortSignal): Promise<CommitSummary[]>;
+  getBaselineCommits(suite: string, params: Record<string, string>, signal?: AbortSignal): Promise<CommitSummary[]>;
 }
 
 // ---- Implementation ----
@@ -59,8 +60,8 @@ export function createBaselinePanel(
 
   // Internal state for cascading dropdowns
   let selectedSuite = '';
-  let selectedMachine = '';
-  let machineHandle: { destroy: () => void; clear: () => void } | null = null;
+  let selectedParams: Record<string, string> = {};
+  let searchChipsHandle: SearchChipsHandle | null = null;
   let commitPicker: CommitPickerHandle | null = null;
   let abortCtrl: AbortController | null = null;
   let cachedCommitValues: string[] = [];
@@ -74,9 +75,9 @@ export function createBaselinePanel(
   }
   form.append(suiteSelect);
 
-  // Machine combobox container (bare)
-  const machineContainer = el('div', {});
-  form.append(machineContainer);
+  // Search chips container (bare)
+  const paramsContainer = el('div', {});
+  form.append(paramsContainer);
 
   // Commit picker container (bare)
   const commitContainer = el('div', {});
@@ -89,32 +90,38 @@ export function createBaselinePanel(
     cachedCommitDisplayMap = new Map();
   }
 
-  function clearMachine(): void {
-    if (machineHandle) { machineHandle.destroy(); machineHandle = null; }
-    machineContainer.replaceChildren();
-    selectedMachine = '';
+  function clearParams(): void {
+    if (searchChipsHandle) { searchChipsHandle.destroy(); searchChipsHandle = null; }
+    paramsContainer.replaceChildren();
+    selectedParams = {};
     clearCommitPicker();
   }
 
-  function createMachineCombo(suite: string): void {
-    clearMachine();
+  function createParamsChips(suite: string): void {
+    clearParams();
     if (!suite) return;
-    machineHandle = renderMachineCombobox(machineContainer, {
+    searchChipsHandle = createSearchChips({
       testsuite: suite,
-      onSelect(name: string) {
-        selectedMachine = name;
-        loadCommits(suite, name);
+      placeholder: 'Add parameter filter...',
+      onChange: (chips) => {
+        selectedParams = chipsToParams(chips);
+        if (Object.keys(selectedParams).length > 0) {
+          loadCommits(suite, selectedParams);
+        } else {
+          clearCommitPicker();
+        }
       },
     });
+    paramsContainer.append(searchChipsHandle.element);
   }
 
-  async function loadCommits(suite: string, machine: string): Promise<void> {
+  async function loadCommits(suite: string, params: Record<string, string>): Promise<void> {
     clearCommitPicker();
     if (abortCtrl) abortCtrl.abort();
     abortCtrl = new AbortController();
 
     try {
-      const commits = await callbacks.getBaselineCommits(suite, machine, abortCtrl.signal);
+      const commits = await callbacks.getBaselineCommits(suite, params, abortCtrl.signal);
       const commitFields = callbacks.getCommitFields(suite);
       cachedCommitValues = commits.map(c => c.commit);
       cachedCommitDisplayMap = new Map();
@@ -131,7 +138,7 @@ export function createBaselinePanel(
         }),
         onSelect(commit: string) {
           // Auto-add baseline on commit selection
-          callbacks.onBaselineAdd({ suite: selectedSuite, machine: selectedMachine, commit });
+          callbacks.onBaselineAdd({ suite: selectedSuite, params: selectedParams, commit });
           // Reset the form for next baseline
           if (commitPicker) { commitPicker.input.value = ''; }
         },
@@ -146,7 +153,7 @@ export function createBaselinePanel(
 
   suiteSelect.addEventListener('change', () => {
     selectedSuite = suiteSelect.value;
-    createMachineCombo(selectedSuite);
+    createParamsChips(selectedSuite);
   });
 
   // --- Chips rendering ---
@@ -155,7 +162,8 @@ export function createBaselinePanel(
     chipsContainer.replaceChildren();
     for (const bl of bls) {
       const commitDisplay = dm.get(bl.commit) ?? bl.commit;
-      const label = `${bl.suite}/${bl.machine}/${commitDisplay}`;
+      const paramsSummary = encodeParamQuery(bl.params || {}) || '(all)';
+      const label = `${bl.suite}/${paramsSummary}/${commitDisplay}`;
 
       const chip = el('span', { class: 'baseline-chip' });
       chip.append(el('span', {}, label));
@@ -182,7 +190,7 @@ export function createBaselinePanel(
       addBtn.style.display = '';
       suiteSelect.value = '';
       selectedSuite = '';
-      clearMachine();
+      clearParams();
       if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
     },
 
@@ -191,7 +199,7 @@ export function createBaselinePanel(
     },
 
     destroy(): void {
-      if (machineHandle) machineHandle.destroy();
+      if (searchChipsHandle) searchChipsHandle.destroy();
       if (commitPicker) commitPicker.destroy();
       if (abortCtrl) abortCtrl.abort();
     },

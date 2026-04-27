@@ -1,11 +1,14 @@
 import type {
   APIKeyCreateResponse, APIKeyItem,
-  CursorPaginated, FieldChangeInfo, FieldInfo, MachineInfo, MachineRunInfo,
-  OffsetPaginated, CommitDetail, CommitResolveResponse, CommitSummary, RunDetail,
+  CursorPaginated, FieldChangeInfo, FieldInfo,
+  CommitDetail, CommitResolveResponse, CommitSummary, RunDetail,
   RunInfo, SampleInfo, TestSuiteInfo,
   RegressionListItem, RegressionDetail, RegressionState,
   ProfileListItem, ProfileMetadata, ProfileFunctionInfo, ProfileFunctionDetail,
+  ParameterKeyItem, ParameterValueItem, DashboardCard,
+  SamplesQueryItem,
 } from './types';
+import { paramsToApiQuery } from './types';
 
 let apiBase = '';
 
@@ -173,36 +176,22 @@ export async function getFields(ts: string, _signal?: AbortSignal): Promise<Fiel
 
 export async function getCommits(
   ts: string,
-  opts?: { machine?: string; signal?: AbortSignal; onProgress?: (loaded: number) => void },
+  opts?: { params?: Record<string, string>; signal?: AbortSignal; onProgress?: (loaded: number) => void },
 ): Promise<CommitSummary[]> {
-  const params: Record<string, string> = {};
-  if (opts?.machine) params.machine = opts.machine;
-  return fetchAllCursorPages<CommitSummary>(apiUrl(ts, 'commits'), params, opts?.signal, opts?.onProgress);
-}
-
-export async function getMachines(
-  ts: string,
-  opts: { search?: string; limit?: number; offset?: number },
-  signal?: AbortSignal,
-): Promise<{ items: MachineInfo[]; total: number }> {
-  const params: Record<string, string> = {};
-  if (opts.search) params.search = opts.search;
-  if (opts.limit !== undefined) params.limit = String(opts.limit);
-  if (opts.offset !== undefined) params.offset = String(opts.offset);
-  const data = await fetchJson<OffsetPaginated<MachineInfo>>(apiUrl(ts, 'machines'), { params, signal });
-  return { items: data.items, total: data.total };
+  const apiParams: Record<string, string> = opts?.params ? paramsToApiQuery(opts.params) : {};
+  return fetchAllCursorPages<CommitSummary>(apiUrl(ts, 'commits'), apiParams, opts?.signal, opts?.onProgress);
 }
 
 export async function getRuns(
   ts: string,
-  opts: { machine: string; commit?: string },
+  opts: { params?: Record<string, string>; commit?: string },
   signal?: AbortSignal,
 ): Promise<RunInfo[]> {
-  const params: Record<string, string> = { machine: opts.machine };
-  if (opts.commit) params.commit = opts.commit;
+  const apiParams: Record<string, string> = opts.params ? paramsToApiQuery(opts.params) : {};
+  if (opts.commit) apiParams.commit = opts.commit;
   return fetchAllCursorPages<RunInfo>(
     apiUrl(ts, 'runs'),
-    params,
+    apiParams,
     signal,
   );
 }
@@ -214,42 +203,12 @@ export async function getSamples(
   onProgress?: (loaded: number) => void,
 ): Promise<SampleInfo[]> {
   return fetchAllCursorPages<SampleInfo>(
-    apiUrl(ts, `runs/${encodeURIComponent(runUuid)}/samples`),
+    apiUrl(ts, 'samples'),
     undefined,
     signal,
     onProgress,
+    { run: runUuid },
   );
-}
-
-export async function getMachine(
-  ts: string,
-  name: string,
-  signal?: AbortSignal,
-): Promise<MachineInfo> {
-  return fetchJson<MachineInfo>(
-    apiUrl(ts, `machines/${encodeURIComponent(name)}`),
-    { signal },
-  );
-}
-
-export async function getMachineRuns(
-  ts: string,
-  machineName: string,
-  opts?: { sort?: string; limit?: number; cursor?: string },
-  signal?: AbortSignal,
-): Promise<CursorPaginated<MachineRunInfo>> {
-  const params: Record<string, string> = {};
-  if (opts?.sort) params.sort = opts.sort;
-  if (opts?.limit !== undefined) params.limit = String(opts.limit);
-  if (opts?.cursor) params.cursor = opts.cursor;
-  return fetchJson<CursorPaginated<MachineRunInfo>>(
-    apiUrl(ts, `machines/${encodeURIComponent(machineName)}/runs`),
-    { params, signal },
-  );
-}
-
-export async function deleteMachine(ts: string, name: string): Promise<void> {
-  return fetchVoid(apiUrl(ts, `machines/${encodeURIComponent(name)}`), { method: 'DELETE' });
 }
 
 export async function getRun(
@@ -321,15 +280,14 @@ export async function searchCommits(
 /** Fetch one page of runs with optional filters (cursor-paginated). */
 export async function getRunsPage(
   ts: string,
-  opts?: { machine?: string; sort?: string; limit?: number; cursor?: string },
+  opts?: { params?: Record<string, string>; sort?: string; limit?: number; cursor?: string },
   signal?: AbortSignal,
 ): Promise<CursorPageResult<RunInfo>> {
-  const params: Record<string, string> = {};
-  if (opts?.machine) params.machine = opts.machine;
-  if (opts?.sort) params.sort = opts.sort;
-  if (opts?.limit !== undefined) params.limit = String(opts.limit);
-  if (opts?.cursor) params.cursor = opts.cursor;
-  return fetchOneCursorPage<RunInfo>(apiUrl(ts, 'runs'), params, signal);
+  const apiParams: Record<string, string> = opts?.params ? paramsToApiQuery(opts.params) : {};
+  if (opts?.sort) apiParams.sort = opts.sort;
+  if (opts?.limit !== undefined) apiParams.limit = String(opts.limit);
+  if (opts?.cursor) apiParams.cursor = opts.cursor;
+  return fetchOneCursorPage<RunInfo>(apiUrl(ts, 'runs'), apiParams, signal);
 }
 
 /** Fetch one page of commits with optional search filter (cursor-paginated). */
@@ -359,15 +317,14 @@ export async function updateCommit(
 
 export async function getTests(
   ts: string,
-  opts?: { machine?: string; metric?: string; search?: string; limit?: number },
+  opts?: { params?: Record<string, string>; metric?: string; search?: string; limit?: number },
   signal?: AbortSignal,
 ): Promise<CursorPageResult<{ name: string }>> {
-  const params: Record<string, string> = {};
-  if (opts?.machine) params.machine = opts.machine;
-  if (opts?.metric) params.metric = opts.metric;
-  if (opts?.search) params.search = opts.search;
-  if (opts?.limit !== undefined) params.limit = String(opts.limit);
-  return fetchOneCursorPage<{ name: string }>(apiUrl(ts, 'tests'), params, signal);
+  const apiParams: Record<string, string> = opts?.params ? paramsToApiQuery(opts.params) : {};
+  if (opts?.metric) apiParams.metric = opts.metric;
+  if (opts?.search) apiParams.search = opts.search;
+  if (opts?.limit !== undefined) apiParams.limit = String(opts.limit);
+  return fetchOneCursorPage<{ name: string }>(apiUrl(ts, 'tests'), apiParams, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +366,6 @@ export async function deleteTestSuite(
 // ---------------------------------------------------------------------------
 
 export interface TrendsDataPoint {
-  machine: string;
   commit: string;
   ordinal: number;
   tag: string | null;
@@ -419,11 +375,11 @@ export interface TrendsDataPoint {
 
 export async function fetchTrends(
   ts: string,
-  opts: { metric: string; machine?: string[]; lastN?: number },
+  opts: { metric: string; params?: Record<string, string>; lastN?: number },
   signal?: AbortSignal,
 ): Promise<TrendsDataPoint[]> {
   const body: Record<string, unknown> = { metric: opts.metric };
-  if (opts.machine?.length) body.machine = opts.machine;
+  if (opts.params && Object.keys(opts.params).length > 0) body.params = opts.params;
   if (opts.lastN) body.last_n = opts.lastN;
   const data = await fetchJson<{ metric: string; items: TrendsDataPoint[] }>(
     apiUrl(ts, 'trends'), { method: 'POST', body, signal });
@@ -523,11 +479,9 @@ export async function getProfileFunctionDetail(
 /** Query parameters for listing regressions. */
 export interface RegressionListParams {
   state?: RegressionState[];
-  machine?: string;
   test?: string;
   metric?: string;
   commit?: string;
-  has_commit?: boolean;
   cursor?: string;
   limit?: number;
 }
@@ -535,12 +489,9 @@ export interface RegressionListParams {
 function buildRegressionParams(opts?: Partial<RegressionListParams>): Record<string, string> {
   const params: Record<string, string> = {};
   if (opts?.state?.length) params.state = opts.state.join(',');
-  if (opts?.machine) params.machine = opts.machine;
   if (opts?.test) params.test = opts.test;
   if (opts?.metric) params.metric = opts.metric;
   if (opts?.commit) params.commit = opts.commit;
-  if (opts?.has_commit === true) params.has_commit = 'true';
-  if (opts?.has_commit === false) params.has_commit = 'false';
   if (opts?.limit !== undefined) params.limit = String(opts.limit);
   if (opts?.cursor) params.cursor = opts.cursor;
   return params;
@@ -575,7 +526,7 @@ export async function createRegression(
     notes?: string;
     state?: RegressionState;
     commit?: string;
-    indicators?: Array<{ machine: string; test: string; metric: string }>;
+    indicators?: Array<{ run_uuid: string; test: string; metric: string }>;
   },
   signal?: AbortSignal,
 ): Promise<RegressionDetail> {
@@ -632,7 +583,7 @@ export async function deleteRegression(
 export async function addRegressionIndicators(
   ts: string,
   regressionUuid: string,
-  indicators: Array<{ machine: string; test: string; metric: string }>,
+  indicators: Array<{ run_uuid: string; test: string; metric: string }>,
   signal?: AbortSignal,
 ): Promise<RegressionDetail> {
   return fetchJson<RegressionDetail>(
@@ -654,6 +605,84 @@ export async function removeRegressionIndicators(
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Run Parameters
+// ---------------------------------------------------------------------------
+
+/** Fetch parameter keys with optional search prefix. */
+export async function getRunParameters(
+  ts: string,
+  opts?: { search?: string; limit?: number; offset?: number },
+  signal?: AbortSignal,
+): Promise<{ items: ParameterKeyItem[] }> {
+  const params: Record<string, string> = {};
+  if (opts?.search) params.search = opts.search;
+  if (opts?.limit !== undefined) params.limit = String(opts.limit);
+  if (opts?.offset !== undefined) params.offset = String(opts.offset);
+  return fetchJson<{ items: ParameterKeyItem[] }>(
+    apiUrl(ts, 'run-parameters'), { params, signal });
+}
+
+/** Fetch values for a specific parameter key with optional search prefix. */
+export async function getRunParameterValues(
+  ts: string,
+  key: string,
+  opts?: { search?: string; limit?: number; offset?: number },
+  signal?: AbortSignal,
+): Promise<{ items: ParameterValueItem[] }> {
+  const params: Record<string, string> = {};
+  if (opts?.search) params.search = opts.search;
+  if (opts?.limit !== undefined) params.limit = String(opts.limit);
+  if (opts?.offset !== undefined) params.offset = String(opts.offset);
+  return fetchJson<{ items: ParameterValueItem[] }>(
+    apiUrl(ts, `run-parameters/${encodeURIComponent(key)}/values`), { params, signal });
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+/** Fetch dashboard card configuration for a test suite. */
+export async function getDashboard(
+  ts: string,
+  signal?: AbortSignal,
+): Promise<DashboardCard[]> {
+  const data = await fetchJson<{ cards: DashboardCard[] }>(
+    apiUrl(ts, 'dashboard'), { signal });
+  return data.cards;
+}
+
+/** Replace all dashboard cards for a test suite. */
+export async function putDashboard(
+  ts: string,
+  cards: DashboardCard[],
+  signal?: AbortSignal,
+): Promise<DashboardCard[]> {
+  const data = await fetchJson<{ cards: DashboardCard[] }>(
+    apiUrl(ts, 'dashboard'), { method: 'PUT', body: { cards: cards }, signal });
+  return data.cards;
+}
+
+// ---------------------------------------------------------------------------
+// POST /samples (replaces POST /query and GET /runs/{uuid}/samples)
+// ---------------------------------------------------------------------------
+
+/** Post a samples query and fetch all pages. */
+export async function postSamples(
+  ts: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+  onProgress?: (loaded: number) => void,
+): Promise<SamplesQueryItem[]> {
+  return fetchAllCursorPages<SamplesQueryItem>(
+    apiUrl(ts, 'samples'),
+    undefined,
+    signal,
+    onProgress,
+    body,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Cached test suite info

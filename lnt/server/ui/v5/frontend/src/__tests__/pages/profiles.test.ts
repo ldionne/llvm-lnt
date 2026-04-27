@@ -10,6 +10,7 @@ vi.mock('../../api', async (importOriginal) => {
     getRuns: vi.fn(),
     getCommits: vi.fn(),
     getMachines: vi.fn(),
+    getRunParameters: vi.fn(),
     getProfilesForRun: vi.fn(),
     getProfileMetadata: vi.fn(),
     getProfileFunctions: vi.fn(),

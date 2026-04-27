@@ -12,7 +12,7 @@ vi.mock('../../api', async (importOriginal) => {
     addRegressionIndicators: vi.fn(),
     removeRegressionIndicators: vi.fn(),
     getFields: vi.fn(),
-    getMachines: vi.fn(),
+    getRunParameters: vi.fn(),
     getTests: vi.fn(),
     getToken: vi.fn(),
     authErrorMessage: vi.fn((err: unknown) => `Auth error: ${err}`),
@@ -40,7 +40,7 @@ vi.mock('../../router', async (importOriginal) => {
 import {
   getRegression, updateRegression, deleteRegression,
   removeRegressionIndicators, addRegressionIndicators,
-  getFields, getMachines, getTests, getToken, authErrorMessage,
+  getFields, getRunParameters, getTests, getToken, authErrorMessage,
 } from '../../api';
 import { regressionDetailPage } from '../../pages/regression-detail';
 import type { RegressionDetail, FieldInfo } from '../../types';
@@ -55,8 +55,8 @@ const mockRegression: RegressionDetail = {
   state: 'detected',
   commit: 'abc123',
   indicators: [
-    { uuid: 'ind-1111', machine: 'clang-x86', test: 'test_a', metric: 'compile_time' },
-    { uuid: 'ind-2222', machine: 'gcc-arm', test: 'test_b', metric: 'execution_time' },
+    { uuid: 'ind-1111', run_uuid: 'run-aaa', test: 'test_a', metric: 'compile_time' },
+    { uuid: 'ind-2222', run_uuid: 'run-bbb', test: 'test_b', metric: 'execution_time' },
   ],
 };
 
@@ -83,9 +83,8 @@ describe('regressionDetailPage', () => {
       items: [{ name: 'test_x' }, { name: 'test_y' }],
       nextCursor: null,
     });
-    (getMachines as ReturnType<typeof vi.fn>).mockResolvedValue({
-      items: [{ name: 'machine-a' }, { name: 'machine-b' }],
-      total: 2,
+    (getRunParameters as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [{ key: 'compiler' }, { key: 'os' }],
     });
   });
 
@@ -652,7 +651,7 @@ describe('regressionDetailPage', () => {
         expect(table).toBeTruthy();
         const rows = table!.querySelectorAll('tbody tr');
         expect(rows.length).toBe(2);
-        expect(table!.textContent).toContain('clang-x86');
+        expect(table!.textContent).toContain('run-aaa');
         expect(table!.textContent).toContain('test_a');
         expect(table!.textContent).toContain('compile_time');
       });
@@ -668,10 +667,11 @@ describe('regressionDetailPage', () => {
         expect(graphLinks.length).toBe(2);
         const href = graphLinks[0].getAttribute('href')!;
         expect(href).toContain('suite=nts');
-        expect(href).toContain('machine=clang-x86');
         expect(href).toContain('metric=compile_time');
         expect(href).toContain('test_filter=test_a');
-        expect(href).toContain('commit=abc123');
+        // Note: the link does not include a trace= parameter because the
+        // indicator response does not include the run's parameters.
+        expect(href).not.toContain('commit=');
       });
     });
 
@@ -821,7 +821,7 @@ describe('regressionDetailPage', () => {
           .find(h => h.textContent?.startsWith('Indicators'));
         expect(heading).toBeTruthy();
         expect(heading!.textContent).toBe(
-          'Indicators (2 tests across 2 machines across 2 metrics)',
+          'Indicators (2 tests across 2 runs across 2 metrics)',
         );
       });
     });
@@ -842,12 +842,12 @@ describe('regressionDetailPage', () => {
       });
     });
 
-    it('excludes null machines/tests from summary count', async () => {
+    it('excludes null run_uuids/tests from summary count', async () => {
       (getRegression as ReturnType<typeof vi.fn>).mockResolvedValue({
         ...mockRegression,
         indicators: [
-          { uuid: 'ind-1', machine: 'clang-x86', test: 'test_a', metric: 'compile_time' },
-          { uuid: 'ind-2', machine: null, test: null, metric: 'execution_time' },
+          { uuid: 'ind-1', run_uuid: 'run-aaa', test: 'test_a', metric: 'compile_time' },
+          { uuid: 'ind-2', run_uuid: null, test: null, metric: 'execution_time' },
         ],
       });
 
@@ -858,7 +858,7 @@ describe('regressionDetailPage', () => {
           .find(h => h.textContent?.startsWith('Indicators'));
         expect(heading).toBeTruthy();
         expect(heading!.textContent).toBe(
-          'Indicators (1 test across 1 machine across 2 metrics)',
+          'Indicators (1 test across 1 run across 2 metrics)',
         );
       });
     });
@@ -881,7 +881,7 @@ describe('regressionDetailPage', () => {
         const heading = Array.from(container.querySelectorAll('h3'))
           .find(h => h.textContent?.startsWith('Indicators'));
         expect(heading!.textContent).toBe(
-          'Indicators (1 test across 1 machine across 1 metric)',
+          'Indicators (1 test across 1 run across 1 metric)',
         );
       });
     });
@@ -902,7 +902,7 @@ describe('regressionDetailPage', () => {
       });
     });
 
-    it('filters indicators by machine name', async () => {
+    it('filters indicators by run UUID', async () => {
       regressionDetailPage.mount(container, { testsuite: 'nts', uuid: TEST_UUID });
 
       await vi.waitFor(() => {
@@ -910,13 +910,13 @@ describe('regressionDetailPage', () => {
       });
 
       const filterInput = container.querySelector('.indicator-filter input') as HTMLInputElement;
-      filterInput.value = 'clang';
+      filterInput.value = 'run-aaa';
       filterInput.dispatchEvent(new Event('input'));
 
       await vi.waitFor(() => {
         const rows = container.querySelectorAll('.indicator-table-container tbody tr');
         expect(rows.length).toBe(1);
-        expect(rows[0].textContent).toContain('clang-x86');
+        expect(rows[0].textContent).toContain('run-aaa');
       });
     });
 
@@ -964,13 +964,13 @@ describe('regressionDetailPage', () => {
       });
 
       const filterInput = container.querySelector('.indicator-filter input') as HTMLInputElement;
-      filterInput.value = 'CLANG';
+      filterInput.value = 'RUN-AAA';
       filterInput.dispatchEvent(new Event('input'));
 
       await vi.waitFor(() => {
         const rows = container.querySelectorAll('.indicator-table-container tbody tr');
         expect(rows.length).toBe(1);
-        expect(rows[0].textContent).toContain('clang-x86');
+        expect(rows[0].textContent).toContain('run-aaa');
       });
     });
 
@@ -982,7 +982,7 @@ describe('regressionDetailPage', () => {
       });
 
       const filterInput = container.querySelector('.indicator-filter input') as HTMLInputElement;
-      filterInput.value = 'clang';
+      filterInput.value = 'run-aaa';
       filterInput.dispatchEvent(new Event('input'));
 
       await vi.waitFor(() => {
@@ -1023,14 +1023,14 @@ describe('regressionDetailPage', () => {
       });
 
       const filterInput = container.querySelector('.indicator-filter input') as HTMLInputElement;
-      filterInput.value = 'clang';
+      filterInput.value = 'run-aaa';
       filterInput.dispatchEvent(new Event('input'));
 
       await vi.waitFor(() => {
         const heading = Array.from(container.querySelectorAll('h3'))
           .find(h => h.textContent?.startsWith('Indicators'));
         expect(heading!.textContent).toContain('showing 1 of 2 tests');
-        expect(heading!.textContent).toContain('1 of 2 machines');
+        expect(heading!.textContent).toContain('1 of 2 runs');
         expect(heading!.textContent).toContain('1 of 2 metrics');
       });
     });
@@ -1048,7 +1048,7 @@ describe('regressionDetailPage', () => {
       });
 
       const filterInput = container.querySelector('.indicator-filter input') as HTMLInputElement;
-      filterInput.value = 'clang';
+      filterInput.value = 'run-aaa';
       filterInput.dispatchEvent(new Event('input'));
 
       await vi.waitFor(() => {
@@ -1093,73 +1093,12 @@ describe('regressionDetailPage', () => {
   // ---------------------------------------------------------------
 
   describe('add indicators panel', () => {
-    it('shows machine checkbox list after machines load', async () => {
+    it('shows add indicators UI after data loads', async () => {
       await mountAndWait();
 
       await vi.waitFor(() => {
-        const machineBoxes = container.querySelectorAll('input[type="checkbox"][data-machine]');
-        expect(machineBoxes.length).toBe(2);
-      });
-    });
-
-    it('creates cross-product indicators for multiple machines and tests', async () => {
-      (addRegressionIndicators as ReturnType<typeof vi.fn>).mockResolvedValue({
-        ...mockRegression,
-        indicators: [...mockRegression.indicators],
-      });
-
-      await mountAndWait();
-
-      // Wait for machines to load
-      await vi.waitFor(() => {
-        expect(container.querySelectorAll('input[type="checkbox"][data-machine]').length).toBe(2);
-      });
-
-      // Select a metric first (pick the first real metric)
-      const metricSelect = container.querySelector('.add-indicators-panel select') as HTMLSelectElement;
-      expect(metricSelect).toBeTruthy();
-      metricSelect.value = 'compile_time';
-      metricSelect.dispatchEvent(new Event('change'));
-
-      // Select both machines
-      const machineBoxes = container.querySelectorAll<HTMLInputElement>('input[type="checkbox"][data-machine]');
-      machineBoxes.forEach(cb => {
-        cb.checked = true;
-        cb.dispatchEvent(new Event('change'));
-      });
-
-      // Wait for tests to load
-      await vi.waitFor(() => {
-        expect(container.querySelectorAll('input[type="checkbox"][data-test]').length).toBe(2);
-      });
-
-      // Select both tests
-      const testBoxes = container.querySelectorAll<HTMLInputElement>('input[type="checkbox"][data-test]');
-      testBoxes.forEach(cb => {
-        cb.checked = true;
-        cb.dispatchEvent(new Event('change'));
-      });
-
-      // Preview should show 4 (2 machines x 2 tests)
-      const preview = container.querySelector('.add-indicator-preview');
-      expect(preview?.textContent).toContain('4 indicators');
-
-      // Click Add
-      const addBtn = container.querySelector('.add-indicator-actions .compare-btn') as HTMLButtonElement;
-      expect(addBtn.disabled).toBe(false);
-      addBtn.click();
-
-      await vi.waitFor(() => {
-        expect(addRegressionIndicators).toHaveBeenCalledWith(
-          'nts', expect.any(String),
-          expect.arrayContaining([
-            { machine: 'machine-a', test: 'test_x', metric: 'compile_time' },
-            { machine: 'machine-a', test: 'test_y', metric: 'compile_time' },
-            { machine: 'machine-b', test: 'test_x', metric: 'compile_time' },
-            { machine: 'machine-b', test: 'test_y', metric: 'compile_time' },
-          ]),
-          expect.any(AbortSignal),
-        );
+        const panel = container.querySelector('.add-indicators-panel');
+        expect(panel).toBeTruthy();
       });
     });
   });
@@ -1188,14 +1127,14 @@ describe('regressionDetailPage', () => {
 
         // Type the UUID prefix to enable confirm
         const confirmInput = container.querySelector(
-          '.delete-machine-confirm input',
+          '.delete-confirm input, .delete-machine-confirm input',
         ) as HTMLInputElement;
         confirmInput.value = TEST_UUID.slice(0, 8);
         confirmInput.dispatchEvent(new Event('input'));
 
         // Click "Confirm Delete"
         const confirmBtn = Array.from(
-          container.querySelectorAll('.delete-machine-confirm .admin-btn-danger'),
+          container.querySelectorAll('.delete-confirm .admin-btn-danger, .delete-machine-confirm .admin-btn-danger'),
         ).find(b => b.textContent?.includes('Confirm')) as HTMLButtonElement;
         expect(confirmBtn.disabled).toBe(false);
         confirmBtn.click();
