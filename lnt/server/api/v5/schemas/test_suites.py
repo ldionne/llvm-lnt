@@ -10,17 +10,6 @@ from .common import BaseQuerySchema
 # Nested field-definition schemas for the POST body
 # ---------------------------------------------------------------------------
 
-class MachineFieldDefSchema(BaseSchema):
-    name = ma.fields.String(
-        required=True,
-        metadata={'description': 'Machine field name'},
-    )
-    searchable = ma.fields.Boolean(
-        load_default=False,
-        metadata={'description': 'Enable search on this field'},
-    )
-
-
 class CommitFieldDefSchema(BaseSchema):
     name = ma.fields.String(
         required=True,
@@ -91,10 +80,6 @@ class TestSuiteCreateRequestSchema(BaseSchema):
         ma.fields.Nested(CommitFieldDefSchema),
         load_default=[],
     )
-    machine_fields = ma.fields.List(
-        ma.fields.Nested(MachineFieldDefSchema),
-        load_default=[],
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +120,8 @@ class TestSuiteDetailResponseSchema(BaseSchema):
         metadata={
             'description': 'Links to per-suite API resources',
             'example': {
-                'machines': '/api/v5/nts/machines',
                 'runs': '/api/v5/nts/runs',
+                'tests': '/api/v5/nts/tests',
             },
         },
     )

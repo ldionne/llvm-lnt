@@ -45,8 +45,8 @@ class TestDiscovery(unittest.TestCase):
         suite = data['test_suites'][0]
         links = suite['links']
         expected_keys = {
-            'machines', 'commits', 'runs', 'tests',
-            'regressions', 'query'
+            'commits', 'runs', 'tests',
+            'regressions', 'run_parameters', 'dashboard'
         }
         self.assertEqual(set(links.keys()), expected_keys)
 

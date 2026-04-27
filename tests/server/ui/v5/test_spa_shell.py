@@ -86,18 +86,6 @@ class TestSPAShell(unittest.TestCase):
         self.assertIn('id="v5-app"', html)
         self.assertIn('data-testsuite="nts"', html)
 
-    def test_machines_route(self):
-        resp = self.client.get('/v5/nts/machines')
-        self.assertEqual(resp.status_code, 200)
-        html = resp.get_data(as_text=True)
-        self.assertIn('id="v5-app"', html)
-
-    def test_machine_detail_route(self):
-        resp = self.client.get('/v5/nts/machines/some-machine')
-        self.assertEqual(resp.status_code, 200)
-        html = resp.get_data(as_text=True)
-        self.assertIn('id="v5-app"', html)
-
     def test_runs_route(self):
         resp = self.client.get('/v5/nts/runs/some-uuid')
         self.assertEqual(resp.status_code, 200)

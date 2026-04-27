@@ -16,7 +16,7 @@ from sqlalchemy import or_
 from ..auth import require_scope
 from ..errors import abort_with_error, reject_unknown_params
 from ..etag import add_etag_to_response
-from ..helpers import dump_response, escape_like, lookup_machine
+from ..helpers import dump_response, escape_like, extract_param_filters
 from ..pagination import (
     cursor_paginate,
     make_paginated_response,
@@ -140,7 +140,7 @@ class CommitList(MethodView):
     @blp.response(200, PaginatedCommitResponseSchema)
     def get(self, query_args, testsuite):
         """List commits (cursor-paginated)."""
-        reject_unknown_params({'cursor', 'limit', 'search', 'machine', 'sort'})
+        reject_unknown_params({'cursor', 'limit', 'search', 'sort'})
         ts = g.ts
         session = g.db_session
 
@@ -159,13 +159,16 @@ class CommitList(MethodView):
                     col.ilike(pattern, escape='\\'))
             query = query.filter(or_(*conditions))
 
-        machine_name = query_args.get('machine')
-        if machine_name:
-            machine = lookup_machine(session, ts, machine_name)
+        # Filter by param.* run parameters (commits with at least one
+        # matching run).
+        param_filters = extract_param_filters()
+        if param_filters:
+            from lnt.server.db.v5 import V5TestSuiteDB
+            pf = V5TestSuiteDB._build_params_filter(ts.Run, param_filters)
             query = query.filter(
                 session.query(ts.Run).filter(
                     ts.Run.commit_id == ts.Commit.id,
-                    ts.Run.machine_id == machine.id,
+                    pf,
                 ).exists()
             )
 

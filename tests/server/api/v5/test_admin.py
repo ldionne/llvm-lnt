@@ -362,7 +362,7 @@ class TestCreatedKeyWorksForAuth(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_created_read_key_can_access_fields(self):
-        """A newly created read key should access /nts/machines."""
+        """A newly created read key should access /nts/runs."""
         create_resp = self.client.post(
             '/api/v5/admin/api-keys',
             json={'name': 'auth-test-fields', 'scope': 'read'},
@@ -371,7 +371,7 @@ class TestCreatedKeyWorksForAuth(unittest.TestCase):
         raw_token = create_resp.get_json()['key']
 
         headers = {'Authorization': f'Bearer {raw_token}'}
-        resp = self.client.get('/api/v5/nts/machines', headers=headers)
+        resp = self.client.get('/api/v5/nts/runs', headers=headers)
         self.assertEqual(resp.status_code, 200)
 
     def test_revoked_key_is_rejected(self):

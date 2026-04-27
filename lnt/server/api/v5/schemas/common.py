@@ -50,12 +50,12 @@ class PaginatedResponseSchema(BaseSchema):
 
 class TestSuiteLinksSchema(BaseSchema):
     """Links to resources within a test suite."""
-    machines = ma.fields.String(metadata={'description': 'URL for machines list'})
     commits = ma.fields.String(metadata={'description': 'URL for commits list'})
     runs = ma.fields.String(metadata={'description': 'URL for runs list'})
     tests = ma.fields.String(metadata={'description': 'URL for tests list'})
     regressions = ma.fields.String(metadata={'description': 'URL for regressions list'})
-    query = ma.fields.String(metadata={'description': 'URL for time-series query endpoint'})
+    run_parameters = ma.fields.String(metadata={'description': 'URL for run parameters endpoint'})
+    dashboard = ma.fields.String(metadata={'description': 'URL for dashboard configuration'})
 
 
 class TestSuiteDiscoverySchema(BaseSchema):

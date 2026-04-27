@@ -16,7 +16,6 @@ from lnt.server.db.v5.models import V5Schema, V5SchemaVersion, utcnow
 sys.path.insert(0, os.path.dirname(__file__))
 from v5_test_helpers import (
     create_app, create_client, admin_headers, make_scoped_headers,
-    create_machine,
 )
 
 
@@ -26,7 +25,6 @@ MINIMAL_SUITE = {
         {'name': 'compile_time', 'type': 'real'},
     ],
     'commit_fields': [],
-    'machine_fields': [],
 }
 
 
@@ -311,7 +309,7 @@ class TestDeleteTestSuite(unittest.TestCase):
             f'/api/v5/test-suites/{name}?confirm=true',
             headers=self._manage_headers)
 
-        resp = self.client.get(f'/api/v5/{name}/machines')
+        resp = self.client.get(f'/api/v5/{name}/runs')
         self.assertEqual(resp.status_code, 404)
 
     def test_recreate_after_delete(self):
@@ -331,11 +329,12 @@ class TestDeleteTestSuite(unittest.TestCase):
         """Create a suite, add some data, then delete it."""
         name = self._create_and_return_name('deletesuite7')
 
-        # Submit a machine to create some data via direct DB access
+        # Submit a commit to create some data via direct DB access
         db = self.app.instance.get_database("default")
         ts = db.testsuite[name]
         session = db.make_session()
-        create_machine(session, ts, name='test-machine')
+        from v5_test_helpers import create_commit
+        create_commit(session, ts, commit='test-commit')
         session.commit()
         session.close()
 

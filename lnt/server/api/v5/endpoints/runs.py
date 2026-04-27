@@ -14,7 +14,14 @@ from sqlalchemy.orm import joinedload
 from ..auth import require_scope
 from ..errors import abort_with_error, reject_unknown_params
 from ..etag import add_etag_to_response
-from ..helpers import dump_response, lookup_run_by_uuid, parse_datetime, serialize_run
+from ..helpers import (
+    build_api_params_filter,
+    dump_response,
+    extract_param_filters,
+    lookup_run_by_uuid,
+    parse_datetime,
+    serialize_run,
+)
 from ..pagination import (
     cursor_paginate,
     make_paginated_response,
@@ -24,7 +31,6 @@ from ..schemas.runs import (
     RunListQuerySchema,
     RunResponseSchema,
     RunSubmitBodySchema,
-    RunSubmitQuerySchema,
     RunSubmitResponseSchema,
 )
 
@@ -48,23 +54,20 @@ class RunList(MethodView):
     def get(self, query_args, testsuite):
         """List runs (cursor-paginated, filterable)."""
         reject_unknown_params(
-            {'machine', 'commit', 'after', 'before', 'sort',
+            {'commit', 'after', 'before', 'sort',
              'cursor', 'limit'})
         ts = g.ts
         session = g.db_session
 
         query = session.query(ts.Run).options(
-            joinedload(ts.Run.machine),
             joinedload(ts.Run.commit_obj),
         )
 
-        # Filter by machine name
-        machine_name = query_args.get('machine')
-        if machine_name:
-            machine = ts.get_machine(session, name=machine_name)
-            if machine is None:
-                return jsonify(make_paginated_response([], None))
-            query = query.filter(ts.Run.machine_id == machine.id)
+        # Filter by param.* run parameters
+        param_filters = extract_param_filters()
+        pf = build_api_params_filter(ts, param_filters)
+        if pf is not None:
+            query = query.filter(pf)
 
         # Filter by commit string
         commit_value = query_args.get('commit')
@@ -102,17 +105,16 @@ class RunList(MethodView):
         return jsonify(make_paginated_response(serialized, next_cursor))
 
     @require_scope('submit')
-    @blp.arguments(RunSubmitQuerySchema, location="query")
     @blp.arguments(RunSubmitBodySchema)
     @blp.response(201, RunSubmitResponseSchema)
-    def post(self, query_args, body, testsuite):
+    def post(self, body, testsuite):
         """Submit a new run.
 
         Accepts the v5 JSON report format (format_version '5').
         Regression detection is external; create regressions
         separately via POST /regressions.
         """
-        reject_unknown_params({'on_machine_conflict'})
+        reject_unknown_params(set())
         ts = g.ts
         session = g.db_session
 
@@ -125,9 +127,7 @@ class RunList(MethodView):
                              "got %r" % (version,))
 
         try:
-            run = ts.import_run(
-                session, body,
-                machine_strategy=query_args['on_machine_conflict'])
+            run = ts.import_run(session, body)
         except ValueError as exc:
             abort_with_error(400, str(exc))
 
@@ -159,7 +159,6 @@ class RunDetail(MethodView):
         session = g.db_session
 
         run = session.query(ts.Run).options(
-            joinedload(ts.Run.machine),
             joinedload(ts.Run.commit_obj),
         ).filter(ts.Run.uuid == run_uuid).first()
 
@@ -172,13 +171,20 @@ class RunDetail(MethodView):
     @require_scope('manage')
     @blp.response(204)
     def delete(self, testsuite, run_uuid):
-        """Delete a run and all associated samples."""
+        """Delete a run and all associated samples.
+
+        Returns 409 if regression indicators reference this run.
+        """
         ts = g.ts
         session = g.db_session
 
         run = lookup_run_by_uuid(session, ts, run_uuid)
 
-        ts.delete_run(session, run.id)
+        try:
+            ts.delete_run(session, run.id)
+        except ValueError as exc:
+            abort_with_error(409, str(exc))
+
         session.flush()
 
         return make_response('', 204)

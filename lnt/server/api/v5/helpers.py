@@ -3,6 +3,7 @@
 import datetime
 
 import marshmallow as ma
+from flask import request as flask_request
 
 from .errors import abort_with_error
 from .schemas.runs import RunResponseSchema
@@ -67,14 +68,6 @@ def get_metric_def(ts, metric_name):
 # Entity lookup helpers (abort with 404 if not found)
 # ---------------------------------------------------------------------------
 
-def lookup_machine(session, ts, machine_name):
-    """Look up a machine by name.  Aborts with 404 if not found."""
-    machine = ts.get_machine(session, name=machine_name)
-    if machine is None:
-        abort_with_error(404, "Machine '%s' not found" % machine_name)
-    return machine
-
-
 def lookup_run_by_uuid(session, ts, run_uuid):
     """Look up a Run by UUID. Aborts with 404 if not found."""
     run = ts.get_run(session, uuid=run_uuid)
@@ -123,6 +116,47 @@ def lookup_profile(session, ts, profile_uuid, *, load_data=False):
 
 
 # ---------------------------------------------------------------------------
+# Run parameter extraction
+# ---------------------------------------------------------------------------
+
+def extract_param_filters(request=None):
+    """Extract ``param.*`` query parameters from the request.
+
+    Returns a dict of ``{key: value_or_list}`` suitable for passing to
+    ``V5TestSuiteDB._build_params_filter``.  Multiple values for the
+    same key are collected into a list (OR semantics); single values
+    remain as plain strings.
+
+    Uses ``request.args.getlist()`` for multi-value support.
+    """
+    if request is None:
+        request = flask_request
+    params = {}
+    for full_key in request.args:
+        if full_key.startswith('param.'):
+            key = full_key[len('param.'):]
+            if not key:
+                continue
+            values = request.args.getlist(full_key)
+            if len(values) == 1:
+                params[key] = values[0]
+            else:
+                params[key] = values
+    return params
+
+
+def build_api_params_filter(ts, params):
+    """Build a SQLAlchemy filter from extracted param dict.
+
+    Wrapper around the DB-layer ``_build_params_filter`` for API use.
+    Returns None if *params* is empty.
+    """
+    if not params:
+        return None
+    return ts._build_params_filter(ts.Run, params)
+
+
+# ---------------------------------------------------------------------------
 # Response validation
 # ---------------------------------------------------------------------------
 
@@ -168,14 +202,11 @@ def format_utc(dt):
 def serialize_run(run, ts):
     """Serialize a Run model instance for API responses.
 
-    Returns a validated dict with uuid, machine, commit, submitted_at,
+    Returns a validated dict with uuid, commit, submitted_at,
     and run_parameters.
     """
-    machine_name = run.machine.name if run.machine else None
-
     data = {
         'uuid': run.uuid,
-        'machine': machine_name,
         'commit': run.commit_obj.commit if run.commit_obj else None,
         'submitted_at': format_utc(run.submitted_at),
         'run_parameters': dict(run.run_parameters) if run.run_parameters else {},

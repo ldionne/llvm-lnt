@@ -40,12 +40,12 @@ def _suite_links(name):
     """Build the standard per-suite links dict."""
     prefix = '/api/v5/%s' % name
     return {
-        'machines': prefix + '/machines',
         'commits': prefix + '/commits',
         'runs': prefix + '/runs',
         'tests': prefix + '/tests',
         'regressions': prefix + '/regressions',
-        'query': prefix + '/query',
+        'run_parameters': prefix + '/run-parameters',
+        'dashboard': prefix + '/dashboard',
     }
 
 

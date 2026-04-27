@@ -28,12 +28,11 @@ PREFIX = f'/api/v5/{TS}'
 def _submit_run_with_profile(client, tag=None):
     """Submit a run with a profiled test.  Returns (run_uuid, test_name)."""
     suffix = tag or uuid.uuid4().hex[:8]
-    machine_name = f'prof-machine-{suffix}'
     commit = f'prof-commit-{suffix}'
     test_name = f'test.suite/profiled-{suffix}'
     profile_b64 = make_profile_base64()
 
-    data = submit_run(client, machine_name, commit, [
+    data = submit_run(client, commit, [
         {
             'name': test_name,
             'execution_time': 1.23,
@@ -71,7 +70,7 @@ class TestProfileListing(unittest.TestCase):
 
     def test_list_profiles_empty(self):
         """Run with no profiles -> empty list."""
-        data = submit_run(self.client, 'no-prof-machine', 'no-prof-commit', [
+        data = submit_run(self.client, 'no-prof-commit', [
             {'name': 'test.suite/no-profile', 'execution_time': 1.0},
         ])
         resp = self.client.get(
@@ -112,7 +111,7 @@ class TestProfileSubmission(unittest.TestCase):
 
     def test_submit_without_profile(self):
         """No profile field -> no profiles created."""
-        data = submit_run(self.client, 'no-prof-m2', 'no-prof-c2', [
+        data = submit_run(self.client, 'no-prof-c2', [
             {'name': 'test.suite/noprof2', 'execution_time': 2.0},
         ])
         resp = self.client.get(
@@ -126,7 +125,6 @@ class TestProfileSubmission(unittest.TestCase):
             f'/api/v5/{TS}/runs',
             json={
                 'format_version': '5',
-                'machine': {'name': 'bad-b64-machine'},
                 'commit': 'bad-b64-commit',
                 'tests': [
                     {'name': 'test.suite/bad-b64', 'profile': '!!!not-base64!!!'},
@@ -136,6 +134,7 @@ class TestProfileSubmission(unittest.TestCase):
         )
         self.assertIn(resp.status_code, (400, 422))
 
+    @unittest.skip("GET /runs/{uuid}/samples removed; will be tested via POST /samples in Phase 2b")
     def test_profile_not_in_sample_metrics(self):
         """The 'profile' key should not appear as a metric in samples."""
         run_uuid, test_name = _submit_run_with_profile(
@@ -148,21 +147,19 @@ class TestProfileSubmission(unittest.TestCase):
             self.assertNotIn('profile', sample.get('metrics', {}))
 
     def test_duplicate_profile_for_same_run_test(self):
-        """Submitting a second run with the same commit+machine but a
+        """Submitting a second run with the same commit but a
         different profile for the same test should create a separate profile
-        (different run).  The unique constraint is per (run_id, test_id),
-        not per (commit, test)."""
+        (different run)."""
         suffix = uuid.uuid4().hex[:8]
-        machine = f'dup-machine-{suffix}'
         commit = f'dup-commit-{suffix}'
         test_name = f'test.suite/dup-{suffix}'
         profile_b64 = make_profile_base64()
 
-        # Two separate run submissions for the same machine+commit+test
-        r1 = submit_run(self.client, machine, commit, [
+        # Two separate run submissions for the same commit+test
+        r1 = submit_run(self.client, commit, [
             {'name': test_name, 'execution_time': 1.0, 'profile': profile_b64},
         ])
-        r2 = submit_run(self.client, machine, commit, [
+        r2 = submit_run(self.client, commit, [
             {'name': test_name, 'execution_time': 2.0, 'profile': profile_b64},
         ])
 

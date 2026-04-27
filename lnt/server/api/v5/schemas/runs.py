@@ -10,17 +10,6 @@ from .common import BaseQuerySchema, CursorPaginationQuerySchema, PaginatedRespo
 # Request body schemas
 # ---------------------------------------------------------------------------
 
-class RunSubmitMachineSchema(BaseSchema):
-    """Machine section of a run submission."""
-    class Meta:
-        unknown = ma.INCLUDE
-
-    name = ma.fields.String(
-        required=True,
-        metadata={'description': 'Machine name'},
-    )
-
-
 class RunSubmitTestEntrySchema(BaseSchema):
     """A single test entry in a run submission."""
     class Meta:
@@ -46,11 +35,6 @@ class RunSubmitBodySchema(BaseSchema):
     format_version = ma.fields.Raw(
         required=True,
         metadata={'description': "Must be the string '5'", 'example': '5'},
-    )
-    machine = ma.fields.Nested(
-        RunSubmitMachineSchema,
-        required=True,
-        metadata={'description': 'Machine definition (name + optional info fields)'},
     )
     commit = ma.fields.String(
         required=True,
@@ -96,10 +80,6 @@ class RunResponseSchema(BaseSchema):
         required=True,
         metadata={'description': 'Server-generated UUID for the run'},
     )
-    machine = ma.fields.String(
-        required=True,
-        metadata={'description': 'Name of the machine this run was on'},
-    )
     commit = ma.fields.String(
         allow_none=True,
         metadata={
@@ -116,7 +96,7 @@ class RunResponseSchema(BaseSchema):
         values=ma.fields.Raw(),
         load_default=None,
         metadata={
-            'description': 'Additional run parameters',
+            'description': 'Run parameters (JSONB dict)',
             'example': {'run_order': '1', 'optimization_level': '-O2'},
         },
     )
@@ -149,10 +129,6 @@ class PaginatedRunResponseSchema(PaginatedResponseSchema):
 
 class RunListQuerySchema(CursorPaginationQuerySchema):
     """Query parameters for GET /runs."""
-    machine = ma.fields.String(
-        load_default=None,
-        metadata={'description': 'Filter by machine name'},
-    )
     commit = ma.fields.String(
         load_default=None,
         metadata={'description': 'Filter by commit string'},
@@ -168,14 +144,4 @@ class RunListQuerySchema(CursorPaginationQuerySchema):
     sort = ma.fields.String(
         load_default=None,
         metadata={'description': 'Sort order. Use -submitted_at for newest first'},
-    )
-
-
-class RunSubmitQuerySchema(BaseQuerySchema):
-    """Query parameters for POST /runs."""
-    on_machine_conflict = ma.fields.String(
-        load_default='reject',
-        validate=ma.validate.OneOf(['reject', 'update']),
-        metadata={'description': "What to do when machine metadata differs: "
-                  "'reject' aborts, 'update' updates the existing machine"},
     )

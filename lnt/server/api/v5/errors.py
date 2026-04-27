@@ -1,7 +1,7 @@
 """Standardized error handling scoped to the v5 API.
 
 Produces responses in the format:
-    {"error": {"code": "not_found", "message": "Machine 'foo' not found"}}
+    {"error": {"code": "not_found", "message": "Test 'foo' not found"}}
 
 Error handlers are registered on the flask-smorest Api / Flask app but only
 apply to v5 API paths to avoid breaking v4 error format.
@@ -205,8 +205,17 @@ def reject_unknown_params(valid_params):
     Call at the top of every GET/POST handler that reads ``request.args``
     so that typos like ``serch=foo`` instead of ``search=foo``
     are caught early (400) rather than silently returning unfiltered data.
+
+    Parameters starting with ``param.`` are always allowed (they are
+    used for run-parameter filtering across multiple endpoints).
     """
-    unknown = set(request.args.keys()) - valid_params
+    unknown = []
+    for key in request.args:
+        if key in valid_params:
+            continue
+        if key.startswith('param.'):
+            continue
+        unknown.append(key)
     if unknown:
         abort_with_error(
             400,

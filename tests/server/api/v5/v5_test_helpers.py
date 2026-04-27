@@ -72,29 +72,20 @@ def make_scoped_headers(app, scope_name):
 # Data creation helpers -- use V5TestSuiteDB methods
 # ---------------------------------------------------------------------------
 
-def create_machine(session, ts, name='test-machine', **info_fields):
-    """Create a Machine via V5TestSuiteDB and return it."""
-    schema_fields = {k: v for k, v in info_fields.items()
-                     if k in ts._machine_field_names}
-    params = {k: v for k, v in info_fields.items()
-              if k not in ts._machine_field_names}
-    return ts.get_or_create_machine(
-        session, name, parameters=params or None, **schema_fields)
-
-
 def create_commit(session, ts, commit='rev-1', **metadata):
     """Create a Commit via V5TestSuiteDB and return it."""
     return ts.get_or_create_commit(session, commit, **metadata)
 
 
-def create_run(session, ts, machine, commit,
-               submitted_at=None):
+def create_run(session, ts, commit,
+               submitted_at=None, run_parameters=None):
     """Create a Run via V5TestSuiteDB and return it."""
     if submitted_at is None:
         submitted_at = datetime.datetime(2024, 1, 1, 12, 0, 0,
                                          tzinfo=datetime.timezone.utc)
-    return ts.create_run(session, machine, commit=commit,
-                         submitted_at=submitted_at)
+    return ts.create_run(session, commit=commit,
+                         submitted_at=submitted_at,
+                         run_parameters=run_parameters)
 
 
 def create_test(session, ts, name='test.suite/benchmark'):
@@ -119,7 +110,7 @@ def create_regression(session, ts, title='Test Regression',
                       notes=None, bug=None):
     """Create a Regression (optionally with indicators) and return it.
 
-    *indicators* is a list of dicts with keys machine_id, test_id, metric.
+    *indicators* is a list of dicts with keys run_id, test_id, metric.
     """
     indicator_list = indicators or []
     return ts.create_regression(
@@ -172,18 +163,16 @@ def set_ordinal(client, commit, ordinal, testsuite='nts'):
         "set_ordinal(%s, %d) failed: %s" % (commit, ordinal, resp.data)
 
 
-def submit_run(client, machine_name, commit, tests,
-               machine_info=None, testsuite='nts'):
+def submit_run(client, commit, tests,
+               run_parameters=None, testsuite='nts'):
     """Submit a run via POST and return response JSON (includes run_uuid)."""
-    machine = {'name': machine_name}
-    if machine_info:
-        machine.update(machine_info)
     payload = {
         'format_version': '5',
-        'machine': machine,
         'commit': commit,
         'tests': tests,
     }
+    if run_parameters:
+        payload['run_parameters'] = run_parameters
     resp = client.post(f'/api/v5/{testsuite}/runs', json=payload,
                        headers=admin_headers())
     assert resp.status_code == 201, (
@@ -196,7 +185,7 @@ def submit_regression(client, indicators=None, state='active',
                       testsuite='nts'):
     """Create a regression via POST and return response JSON.
 
-    *indicators* is a list of {machine, test, metric} dicts.
+    *indicators* is a list of {run_uuid, test, metric} dicts.
     """
     body = {'state': state}
     if indicators:

@@ -15,15 +15,14 @@ _ENDPOINT_MODULES = [
     'discovery',
     'test_suites',
     'commits',
-    'machines',
     'runs',
     'tests',
-    'samples',
     'profiles',
-    'query',
     'regressions',
     'trends',
     'admin',
+    'run_parameters',
+    'dashboard',
 ]
 
 

@@ -108,10 +108,6 @@ class CommitListQuerySchema(CursorPaginationQuerySchema):
                   'string, tag, and searchable commit fields '
                   '(case-insensitive)'},
     )
-    machine = ma.fields.String(
-        load_default=None,
-        metadata={'description': 'Filter to commits with runs on this machine'},
-    )
     sort = ma.fields.String(
         load_default=None,
         validate=ma.validate.OneOf(['ordinal']),

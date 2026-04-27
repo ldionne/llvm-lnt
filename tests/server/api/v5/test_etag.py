@@ -53,10 +53,10 @@ class TestETagOnEndpoints(unittest.TestCase):
         cls.app = create_app(sys.argv[1])
         cls.client = create_client(cls.app)
 
-    def test_machines_endpoint_returns_200(self):
-        """A GET to /machines should succeed (ETags are applied to detail
+    def test_runs_endpoint_returns_200(self):
+        """A GET to /runs should succeed (ETags are applied to detail
         endpoints, not lists)."""
-        resp = self.client.get('/api/v5/nts/machines')
+        resp = self.client.get('/api/v5/nts/runs')
         self.assertEqual(resp.status_code, 200)
 
     def test_test_suite_detail_returns_200(self):

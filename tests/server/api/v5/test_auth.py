@@ -86,7 +86,7 @@ class TestBootstrapToken(unittest.TestCase):
         """A token that does not match the bootstrap token (and has no
         matching DB key) should abort with 401 on a read-scoped endpoint."""
         wrong_headers = {'Authorization': 'Bearer wrong_token_value'}
-        resp = self.client.get('/api/v5/nts/machines', headers=wrong_headers)
+        resp = self.client.get('/api/v5/nts/runs', headers=wrong_headers)
         self.assertEqual(resp.status_code, 401)
 
 
@@ -102,7 +102,7 @@ class TestUnauthenticatedAccess(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
 
     def test_fields_no_auth(self):
-        resp = self.client.get('/api/v5/nts/machines')
+        resp = self.client.get('/api/v5/nts/runs')
         self.assertEqual(resp.status_code, 200)
 
     def test_schema_no_auth(self):
@@ -120,7 +120,7 @@ class TestInvalidToken(unittest.TestCase):
     def test_invalid_bearer_token_on_read_endpoint_returns_401(self):
         """An invalid Bearer token must return 401, not silently succeed."""
         headers = {'Authorization': 'Bearer totally_invalid_token_xyz'}
-        resp = self.client.get('/api/v5/nts/machines', headers=headers)
+        resp = self.client.get('/api/v5/nts/runs', headers=headers)
         self.assertEqual(resp.status_code, 401)
 
     def test_invalid_bearer_token_on_testsuite_read_returns_401(self):
@@ -132,7 +132,7 @@ class TestInvalidToken(unittest.TestCase):
     def test_empty_bearer_token_returns_401(self):
         """'Bearer ' with no actual token value returns 401."""
         headers = {'Authorization': 'Bearer '}
-        resp = self.client.get('/api/v5/nts/machines', headers=headers)
+        resp = self.client.get('/api/v5/nts/runs', headers=headers)
         self.assertEqual(resp.status_code, 401)
 
     def test_invalid_token_on_unprotected_discovery_passes(self):
@@ -147,7 +147,7 @@ class TestInvalidToken(unittest.TestCase):
         preserving backward compatibility with proxies/middleware that may
         inject other schemes."""
         headers = {'Authorization': 'NotBearer sometoken'}
-        resp = self.client.get('/api/v5/nts/machines', headers=headers)
+        resp = self.client.get('/api/v5/nts/runs', headers=headers)
         self.assertEqual(resp.status_code, 200)
 
 
@@ -165,7 +165,7 @@ class TestScopedAPIKeys(unittest.TestCase):
 
     def test_read_key_can_access_fields(self):
         resp = self.client.get(
-            '/api/v5/nts/machines', headers=self._read_headers)
+            '/api/v5/nts/runs', headers=self._read_headers)
         self.assertEqual(resp.status_code, 200)
 
 
@@ -193,7 +193,7 @@ class TestRequireAuthForReads(unittest.TestCase):
 
     def test_unauthenticated_read_returns_401(self):
         """Unauthenticated GET to a read-scoped endpoint returns 401."""
-        resp = self.client.get('/api/v5/nts/machines')
+        resp = self.client.get('/api/v5/nts/runs')
         self.assertEqual(resp.status_code, 401)
 
     def test_unauthenticated_fields_returns_401(self):
@@ -204,7 +204,7 @@ class TestRequireAuthForReads(unittest.TestCase):
     def test_authenticated_read_returns_200(self):
         """Authenticated GET with read scope returns 200."""
         resp = self.client.get(
-            '/api/v5/nts/machines', headers=self._read_headers)
+            '/api/v5/nts/runs', headers=self._read_headers)
         self.assertEqual(resp.status_code, 200)
 
     def test_authenticated_fields_returns_200(self):
@@ -216,7 +216,7 @@ class TestRequireAuthForReads(unittest.TestCase):
     def test_admin_token_still_works(self):
         """Admin bootstrap token still works when reads require auth."""
         resp = self.client.get(
-            '/api/v5/nts/machines', headers=admin_headers())
+            '/api/v5/nts/runs', headers=admin_headers())
         self.assertEqual(resp.status_code, 200)
 
 
@@ -268,7 +268,7 @@ class TestLastUsedAtThrottling(unittest.TestCase):
 
         # Make a request
         headers = {'Authorization': f'Bearer {raw_token}'}
-        resp = self.client.get('/api/v5/nts/machines', headers=headers)
+        resp = self.client.get('/api/v5/nts/runs', headers=headers)
         self.assertEqual(resp.status_code, 200)
 
         # Verify last_used_at is now set
@@ -288,7 +288,7 @@ class TestLastUsedAtThrottling(unittest.TestCase):
 
         # Make a request
         headers = {'Authorization': f'Bearer {raw_token}'}
-        resp = self.client.get('/api/v5/nts/machines', headers=headers)
+        resp = self.client.get('/api/v5/nts/runs', headers=headers)
         self.assertEqual(resp.status_code, 200)
 
         # Verify last_used_at was NOT updated (still ~30 min ago)
@@ -308,7 +308,7 @@ class TestLastUsedAtThrottling(unittest.TestCase):
 
         # Make a request
         headers = {'Authorization': f'Bearer {raw_token}'}
-        resp = self.client.get('/api/v5/nts/machines', headers=headers)
+        resp = self.client.get('/api/v5/nts/runs', headers=headers)
         self.assertEqual(resp.status_code, 200)
 
         # Verify last_used_at was updated (no longer 2 hours ago)
