@@ -45,17 +45,17 @@ v5 frontend.
 | Document | Contents |
 |----------|----------|
 | [Infrastructure](api/infrastructure.md) | Framework (flask-smorest), URL structure, pagination, filtering, response format, authentication, testing, deferred features, AI orientation |
-| [Endpoints](api/endpoints.md) | All entity endpoint specifications: machines, commits, runs, tests, samples, profiles, regressions, time series, schema, admin |
+| [Endpoints](api/endpoints.md) | All entity endpoint specifications: commits, runs, tests, samples, run parameters, profiles, regressions, trends, dashboard, schema |
 
 ### Web UI — [`ui/`](ui/)
 
 | Document | Contents |
 |----------|----------|
 | [Architecture](ui/architecture.md) | SPA design, client-side routing, Flask backend routes, navigation bar, frontend code structure, build config, implementation phases |
-| [Dashboard](ui/dashboard.md) | Landing page with sparkline trend overview across test suites |
-| [Browsing Pages](ui/browsing.md) | Test Suites page (suite picker + tabs), Machine Detail, Run Detail, Commit Detail, Regression Detail, and inline regression list/triage |
-| [Graph](ui/graph.md) | Time-series visualization: multi-machine, lazy loading, test selection, baselines, regression annotations |
-| [Compare](ui/compare.md) | Side-by-side comparison of two commits/runs: selection panel, ratio chart, geomean summary, bidirectional sync |
+| [Dashboard](ui/dashboard.md) | Landing page with pinned query cards (per-suite sparkline trends) |
+| [Browsing Pages](ui/browsing.md) | Test Suites page (suite picker + tabs), Run Detail, Commit Detail, Regression Detail, and inline regression list/triage |
+| [Graph](ui/graph.md) | Time-series visualization: parameter-based traces, lazy loading, test selection, baselines, regression annotations |
+| [Compare](ui/compare.md) | Side-by-side comparison of two commits/runs: search chip selection, ratio chart, geomean summary, bidirectional sync |
 | [Admin](ui/admin.md) | API key management, test suite schema management |
 
 ### Historical Discussion
@@ -72,10 +72,10 @@ These v4 pages are intentionally omitted from the v5 UI:
 | v4 Feature | Rationale |
 |------------|-----------|
 | Daily Report | Subsumed by Dashboard + Graph. The dashboard shows sparkline trends; the graph page shows detailed time-series. |
-| Latest Runs Report | Subsumed by Dashboard (sparkline trend overview) and Test Suites page (Recent Activity tab). |
+| Latest Runs Report | Subsumed by Dashboard (sparkline trend overview) and Test Suites page (Runs tab). |
 | Summary Report | Low usage, "WIP" in v4. Can be added later if needed. |
 | Matrix View | Niche use case. The Graph page with per-test drill-down covers the same need. |
-| Global Status | Subsumed by Dashboard (sparkline trend overview with per-machine traces). |
+| Global Status | Subsumed by Dashboard (pinned query card sparklines). |
 | Profile Admin | Operational concern, not a core user workflow. Keep in v4. |
 | Submit Run page | Runs are submitted via CLI (`lnt submit`) or API. A form-based UI is rarely used. |
 | Rules page | Read-only diagnostic page. Keep in v4 for ops. |

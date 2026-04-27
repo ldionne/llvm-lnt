@@ -31,18 +31,25 @@ endpoint (`GET /runs/{uuid}/profiles`).
 
 ### A/B Picker
 
-Each side (A and B) has its own cascading selectors. The two sides may
-select different test suites. Changing an upstream selector clears
-downstream selections:
+Each side (A and B) has its own cascading selectors that progressively narrow
+to a single run. The two sides may select different test suites. Changing an
+upstream selector clears downstream selections:
 
 1. **Suite**: dropdown from `data-testsuites`. Disabled: never.
-2. **Machine**: combobox over machine names for the selected suite. Disabled
-   until suite is selected.
+2. **Parameter search chips**: Two-phase autocomplete input for filtering runs
+   by `run_parameters`. The user types a key prefix and the server suggests
+   matching keys from `GET /run-parameters?search=...`. After selecting a key,
+   the server suggests values from `GET /run-parameters/{key}/values?search=...`.
+   A chip like `(compiler: clang-21)` is created. Multiple chips can be added.
+   Disabled until suite is selected. The UI shows progressive narrowing feedback
+   (e.g., "327 runs -> add `arch:aarch64` -> 12 runs").
 3. **Commit**: combobox over commits filtered to those with profile-bearing
-   runs on the selected machine. Disabled until machine is selected.
-4. **Run**: dropdown of runs for the selected machine+commit that contain
-   profile data (shows timestamp + short UUID). Disabled until commit is
-   selected.
+   runs matching the parameter chips, via `GET /commits?param.X=Y`. Disabled
+   until at least one parameter chip is added. The narrowing feedback continues
+   (e.g., "12 runs -> add `commit:abc123` -> 1 run").
+4. **Run**: dropdown of runs for the selected parameter query + commit that
+   contain profile data (shows timestamp + short UUID). Disabled until commit
+   is selected. When only one matching run exists, it is auto-selected.
 5. **Test**: dropdown over tests that have profiles for the selected run
    (populated from `GET /runs/{uuid}/profiles`). Disabled until run is
    selected.

@@ -19,8 +19,8 @@ admin page reads the list of available test suites from the HTML
 | Create Suite | Name input + JSON schema definition textarea | `POST test-suites` |
 
 **Test Suites tab details**:
-- **Suite selector**: Dropdown to switch between test suites. Selecting a suite loads and displays its schema (metrics, commit fields, machine fields, run fields).
-- **Delete suite**: A delete button per suite. Clicking it shows an inline confirmation panel explaining that deleting a suite permanently destroys all machines, runs, commits, samples, and regressions, and is irreversible. The user must type the exact suite name to confirm. Calls `DELETE /api/v5/test-suites/{name}?confirm=true`. Requires `manage` scope.
+- **Suite selector**: Dropdown to switch between test suites. Selecting a suite loads and displays its schema (metrics, commit fields).
+- **Delete suite**: A delete button per suite. Clicking it shows an inline confirmation panel explaining that deleting a suite permanently destroys all runs, commits, samples, and regressions, and is irreversible. The user must type the exact suite name to confirm. Calls `DELETE /api/v5/test-suites/{name}?confirm=true`. Requires `manage` scope.
 
 **Create Suite tab**:
-- A name input and a JSON textarea where the user pastes the full suite definition (name, metrics, commit_fields, machine_fields). The JSON format matches the `POST /api/v5/test-suites` API. On success, switches to the Schemas tab with the new suite auto-selected. Requires a token with `manage` scope.
+- A name input and a JSON textarea where the user pastes the full suite definition (name, metrics, commit_fields). The JSON format matches the `POST /api/v5/test-suites` API. On success, switches to the Schemas tab with the new suite auto-selected. Requires a token with `manage` scope.

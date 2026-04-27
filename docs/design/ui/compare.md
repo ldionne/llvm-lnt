@@ -3,8 +3,7 @@
 Page specification for the Compare page at `/v5/compare`.
 
 For the SPA architecture and routing, see [`architecture.md`](architecture.md).
-Related pages: [Graph](graph.md), [Browsing Pages](browsing.md),
-[Regressions](regressions.md).
+Related pages: [Graph](graph.md), [Browsing Pages](browsing.md).
 
 
 ## Compare -- `/v5/compare?suite_a={ts}&...`
@@ -18,13 +17,13 @@ independently select its suite.
 ### Selection Panel
 
 Each side (A and B) has independent controls:
-- **Suite**: dropdown selector populated from `data-testsuites`. Changing the suite clears the machine, commit, and runs for that side and re-populates the machine combobox from the new suite's machines endpoint. Clearing the suite also clears cached fields and commits for that side so stale metrics don't linger.
-- **Commit**: combobox (searchable dropdown) over commit values. When the schema defines a commit_field with ``display: true``, the dropdown items show the display value (e.g. short SHA) while the internal selection uses the raw commit string; when no display field is defined or not populated, the raw commit string is shown. The text filter matches against both the raw commit string and the display value. Filters suggestions to only show commits where the selected machine has runs. When a machine is pre-selected from URL state, its commits are fetched on creation so the dropdown is correctly filtered from the start. **Disabled until a machine is selected** -- shows "Select a machine first" placeholder. Re-disabled if the machine is cleared. Clearing the commit also clears the runs for that side.
-- **Machine**: combobox over machine names. The full machine list for the selected suite is fetched once and filtered locally by case-insensitive substring as the user types (instant, no per-keystroke API calls). **Disabled until a suite is selected** -- shows "Select a suite first" placeholder. Clearing the machine text and blurring resets downstream state (commit, runs) and disables the commit input.
-- **Runs**: checkbox list of runs for the selected commit+machine, populated by `GET /api/v5/{ts}/runs?machine=M&commit=O`. Empty list shown when no runs exist. All runs are selected by default. The only exception is URL state restoration: if the shared URL specifies a subset of runs, that selection is restored. Each run shows its timestamp and a short UUID linking to the Run Detail page. Before a commit is selected, a hint message ("Select a commit first") is shown instead.
+- **Suite**: dropdown selector populated from `data-testsuites`. Changing the suite clears the parameter chips, commit, and runs for that side. Clearing the suite also clears cached fields and commits for that side so stale metrics don't linger.
+- **Parameter search chips**: Two-phase autocomplete input for filtering runs by `run_parameters`. The user types a key prefix (e.g., `comp`) and the server suggests matching keys from `GET /run-parameters?search=comp`. After selecting a key (e.g., `compiler:`), the server suggests values from `GET /run-parameters/compiler/values?search=...`. A chip like `(compiler: clang-21)` is created. Multiple chips can be added; different keys combine with AND, multiple values for the same key combine with OR. **Disabled until a suite is selected** -- shows "Select a suite first" placeholder.
+- **Commit**: combobox (searchable dropdown) over commit values. When the schema defines a commit_field with ``display: true``, the dropdown items show the display value (e.g. short SHA) while the internal selection uses the raw commit string; when no display field is defined or not populated, the raw commit string is shown. The text filter matches against both the raw commit string and the display value. Suggestions are scoped to commits that have runs matching the parameter chips via `GET /commits?param.X=Y`. When parameter chips are set from URL state, commits are fetched on creation so the dropdown is correctly filtered from the start. **Disabled until at least one parameter chip is added** -- shows "Add parameters first" placeholder. Re-disabled if all parameter chips are cleared. Clearing the commit also clears the runs for that side.
+- **Runs**: checkbox list of runs for the selected commit + parameter query, populated by `GET /api/v5/{ts}/runs?param.X=Y&commit=O`. Empty list shown when no runs exist. All runs are selected by default. The only exception is URL state restoration: if the shared URL specifies a subset of runs, that selection is restored. Each run shows its timestamp and a short UUID linking to the Run Detail page. Before a commit is selected, a hint message ("Select a commit first") is shown instead.
 - **Run aggregation**: strategy for aggregating across selected runs (median/mean/min/max); grayed out when only one run selected
 
-A **Swap sides** button (circular, showing arrows) sits between the two sides. Clicking it exchanges all of side A's state (commit, machine, runs, run aggregation) with side B's, updates the URL, re-renders the selection panel, and triggers auto-compare. This is useful for quickly reversing the baseline/new direction.
+A **Swap sides** button (circular, showing arrows) sits between the two sides. Clicking it exchanges all of side A's state (commit, parameter chips, runs, run aggregation) with side B's, updates the URL, re-renders the selection panel, and triggers auto-compare. This is useful for quickly reversing the baseline/new direction.
 
 Global controls (shared across both sides):
 - **Metric**: single-select dropdown; one metric at a time, applies to both table and chart. Shows the **union** of metrics from both sides' suites. Only metrics with `type === 'real'` are shown (filtered client-side). Before any suite is selected, the metric area shows a "Select a suite to load metrics..." hint instead of an empty dropdown.
@@ -78,8 +77,9 @@ Global controls (shared across both sides):
 
 There is no Compare button. The comparison triggers automatically whenever the
 state becomes valid (both sides have runs and a metric is selected), like the
-Graph page's auto-plot. Changing the machine, commit, metric, or aggregation
-settings re-triggers the comparison. Previous in-flight fetches are aborted.
+Graph page's auto-plot. Changing the parameter chips, commit, metric, or
+aggregation settings re-triggers the comparison. Previous in-flight fetches
+are aborted.
 
 
 ### Comparison Table
@@ -189,7 +189,7 @@ A test whose bar falls inside the band has `|Delta %| < threshold`.
 - **Null metrics**: when a test has a sample but no value for the selected metric, display "N/A" in the table and exclude from the chart
 - **Zero baseline**: when Value A is 0, display "N/A" for Delta %, Ratio, and Status (raw values are still shown)
 - **Interactive rows**: Clicking a row toggles its visibility on the chart. Double-clicking a row isolates it (hides all others), like the Graph page's legend table. Manually-hidden rows (toggled by clicking) are shown grayed out in the table (not removed from the DOM). The "Hide noise" checkbox is a separate filter that removes noise rows from the DOM entirely. The two filters are independent: manual toggles persist across hideNoise changes, and changing noise filtering knobs correctly hides/unhides tests as their status changes.
-- **Summary message**: A message above the table rows shows a count, consistent with the Graph page's legend message: "150 tests" when all visible, "120 of 150 tests visible" when some are hidden, or "42 of 150 tests matching" when a text filter or chart zoom is active. Counts reflect only tests present in the table — noise-hidden tests (removed by "Hide noise") are excluded from both the numerator and denominator.
+- **Summary message**: A message above the table rows shows a count, consistent with the Graph page's legend message: "150 tests" when all visible, "120 of 150 tests visible" when some are hidden, or "42 of 150 tests matching" when a text filter or chart zoom is active. Counts reflect only tests present in the table -- noise-hidden tests (removed by "Hide noise") are excluded from both the numerator and denominator.
 - **Profile column**: When both sides have profile data for a test, a
   "Profile" link appears. Clicking it navigates to the Profiles page
   pre-populated with both sides' run and test:
@@ -244,7 +244,7 @@ rounding may cause minor drift). When there are no comparable tests
 percentage. A tooltip on the `.summary-count` span explains the denominator.
 
 **Non-comparable categories** (Only in A, Only in B, N/A) show a colored
-dot, label, and count only — no percentage.
+dot, label, and count only -- no percentage.
 
 **Filtering behavior**: the summary bar respects the text filter and chart zoom
 (counts reflect only tests visible in those filters). The comparable-category
@@ -273,9 +273,9 @@ The chart and table always represent the same dataset:
 
 ### Data Flow
 
-1. Page loads: fetch metric metadata via `GET test-suites/{ts}` (fields from `schema.metrics`). Commits are fetched per-machine via `GET commits?machine={name}` (cursor-paginated) when a machine is selected, to populate the commit combobox with only the commits relevant to that machine.
-2. User selects commit and machine on each side. On each change, fetch `GET runs?machine=M&commit=O` to populate the runs checkbox list. If no runs exist, show an empty list.
-3. Once both sides have runs and a metric is selected, comparison triggers automatically. Fetch sample data for each selected run via `GET runs/{uuid}/samples` (cursor-paginated with `limit=10000`). Show a progress indicator during fetch.
+1. Page loads: fetch metric metadata via `GET test-suites/{ts}` (fields from `schema.metrics`). Commits are fetched per parameter query via `GET commits?param.X=Y` (cursor-paginated) when parameter chips are set, to populate the commit combobox with only the commits relevant to that parameter query.
+2. User sets parameter chips and selects a commit on each side. On each change, fetch `GET runs?param.X=Y&commit=O` to populate the runs checkbox list. If no runs exist, show an empty list.
+3. Once both sides have runs and a metric is selected, comparison triggers automatically. Fetch sample data for each selected run via `POST /samples` with `"run": "{uuid}"` (cursor-paginated with `limit=10000`). Show a progress indicator during fetch.
 4. Client-side: aggregate samples (within-run via sample aggregation), aggregate across runs (via run aggregation), join on test name, compute derived columns (delta, ratio, status, p-value when the knob is enabled).
 5. Render table and chart.
 6. Subsequent filter/sort/zoom operations are client-side (data already loaded).
@@ -288,15 +288,15 @@ The chart and table always represent the same dataset:
 **Per-run sample caching**: Fetched samples are cached per run UUID. Changing
 the metric, aggregation function, noise filtering settings, or run selection
 re-aggregates and re-compares from cache without any API calls. Only selecting
-a new commit or machine (which produces different run UUIDs) triggers new
-fetches, and only for runs not already in the cache.
+a new commit or changing parameter chips (which produces different run UUIDs)
+triggers new fetches, and only for runs not already in the cache.
 
 
 ### URL State
 
 All selection state is encoded as query parameters for shareability:
-- `suite_a`, `commit_a`, `machine_a`, `runs_a` (comma-separated UUIDs), `run_agg_a`
-- `suite_b`, `commit_b`, `machine_b`, `runs_b`, `run_agg_b`
+- `suite_a`, `commit_a`, `params_a` (encoded parameter query), `runs_a` (comma-separated UUIDs), `run_agg_a`
+- `suite_b`, `commit_b`, `params_b`, `runs_b`, `run_agg_b`
 - `metric`, `sample_agg`
 - `noise_pct`, `noise_pval`, `noise_floor` (knob values; omitted when at defaults: 1, 0.05, 0 respectively), `noise_pct_on`, `noise_pval_on`, `noise_floor_on` (knob enabled state; all default to disabled, so `_on` params only appear as `1` when enabled), `hide_noise`
 - Filter/sort state as applicable
@@ -307,7 +307,7 @@ credentials when sharing URLs). All URL updates use `replaceState` (not
 individual setting changes.
 
 
-**Links out**: Machine Detail, Run Detail, Graph (with machine pre-filled),
+**Links out**: Run Detail, Graph (with parameter query pre-filled),
 Regression Detail, Profiles (pre-populated A/B from comparison row).
 
 
@@ -315,7 +315,7 @@ Regression Detail, Profiles (pre-populated A/B from comparison row).
 
 A collapsible panel (button: "Add to regression" in the controls area). When
 expanded, offers:
-- "Create new regression" -- pre-fills commit, machines, tests, and metrics from the current comparison into a new regression
+- "Create new regression" -- pre-fills commit, runs, tests, and metrics from the current comparison into a new regression. Indicators use `(run_uuid, test, metric)` tuples.
 - "Add to existing" -- a regression search combobox; adds the comparison's indicators to the selected regression
 
 Only tests currently visible in the comparison table are included as

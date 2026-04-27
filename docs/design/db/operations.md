@@ -13,11 +13,6 @@ Runs are submitted as JSON via `POST /api/v5/{suite}/runs`.
 ```json
 {
   "format_version": "5",
-  "machine": {
-    "name": "my-machine",
-    "hardware": "x86_64",
-    "os": "linux"
-  },
   "commit": "abc123def456",
   "commit_fields": {
     "git_sha": "abc123def456789...",
@@ -25,6 +20,9 @@ Runs are submitted as JSON via `POST /api/v5/{suite}/runs`.
     "commit_message": "Fix vectorizer regression"
   },
   "run_parameters": {
+    "compiler": "clang-21",
+    "os": "linux",
+    "arch": "x86_64",
     "build_config": "Release"
   },
   "tests": [
@@ -39,14 +37,14 @@ Runs are submitted as JSON via `POST /api/v5/{suite}/runs`.
 ```
 
 - `format_version`: Required, must be `"5"`.
-- `machine`: Required. `name` is required; other keys match `machine_fields`
-  from the schema and are stored in the corresponding columns. Keys that do not
-  match any `machine_fields` entry go into the `parameters` JSONB blob.
 - `commit`: Required string. Identifies which commit this run belongs to.
 - `commit_fields`: Optional. Keys match `commit_fields` from the schema.
   First-write-wins: if the commit already exists, metadata is not overwritten.
   Use PATCH on the commit to update metadata after creation.
-- `run_parameters`: Optional. Stored as JSONB on the Run.
+- `run_parameters`: Optional (defaults to `{}`). Flat key-value metadata for
+  the run. Keys must match `[a-zA-Z0-9_]+` and must not use reserved names
+  (`commit`, `test`, `metric`, `sort`, `cursor`, `limit`, `run`, `search`).
+  Values are coerced to strings at ingestion.
 - `tests`: Required. Each entry has `name` plus metric values. Metric values
   may be scalars or arrays. An array value (e.g. `"execution_time": [0.1, 0.2]`)
   creates one Sample row per element. All arrays in a single test entry must
@@ -56,6 +54,10 @@ Runs are submitted as JSON via `POST /api/v5/{suite}/runs`.
   `profile` field may contain base64-encoded profile binary data; if present,
   a Profile row is created and linked to the run+test. The `profile` key is
   a reserved name and must not collide with metric names.
+
+On submission, the server upserts all parameter keys into
+`{suite}_ParameterKey` and all (key, value) pairs into
+`{suite}_ParameterValue` using `INSERT ... ON CONFLICT DO NOTHING`.
 
 
 ## D7: Commit Metadata Population
@@ -81,29 +83,34 @@ tool or AI agent) that analyzes time-series data and creates Regressions via
 the API when it detects significant changes.
 
 
-## D9: Search
+## D9: Search and Parameter Discovery
 
-List endpoints for commits, machines, and tests support a unified `?search=`
-parameter.
+List endpoints for commits and tests support a unified `?search=` parameter.
 
 - `GET /commits?search=abc` matches `commit` column, `tag` column, OR any
   `searchable` commit_field via case-insensitive substring matching (OR
   semantics).
-- `GET /machines?search=x86` matches `name` column OR any `searchable`
-  machine_field via case-insensitive substring matching (OR semantics).
 - `GET /tests?search=bench` matches the `name` column via case-insensitive
   substring matching.
 - This replaces v4's ad-hoc `tag_prefix`, `name_prefix`, `name_contains`
   parameters with a consistent pattern.
 
+Run parameter discovery uses dedicated endpoints:
+
+- `GET /run-parameters` lists known parameter key names for autocomplete.
+- `GET /run-parameters/{key}/values` lists known values for a given key.
+
+Both endpoints support `?search=` prefix matching and are paginated.
+
 
 ## D10: Time-Series Queries
 
-The primary query pattern is: "give me metric values for (machine, test,
+The primary query pattern is: "give me metric values for (parameter set, test,
 metric) ordered by commit ordinal."
 
-This is `Sample JOIN Run JOIN Commit` filtered by `machine_id` and `test_id`,
-ordered by `Commit.ordinal`.
+This is `Sample JOIN Run JOIN Commit` filtered by
+`Run.run_parameters @> '{...}'` (JSONB containment) and `test_id`, ordered by
+`Commit.ordinal`.
 
 When sorting by ordinal, commits without ordinals are excluded (they have no
 meaningful position). When not sorting by ordinal, all runs are included
@@ -138,8 +145,9 @@ a v5 Postgres database:
   linked-list position becomes the ordinal.
 - v4 `tag` column on Order -> v5 `Commit.tag` directly.
 - Run.order_id -> Run.commit_id; Run.start_time -> Run.submitted_at.
-- v4 FieldChange + RegressionIndicator -> v5 RegressionIndicator (machine_id,
-  test_id, metric resolved from FieldChange; field_change_id FK removed).
+- v4 Machine name and fields -> v5 `Run.run_parameters` JSONB on each run.
+- v4 FieldChange + RegressionIndicator -> v5 RegressionIndicator (run_id,
+  test_id, metric resolved from FieldChange).
 - Baseline, ChangeIgnore, Profile tables are not migrated.
 
 
@@ -172,21 +180,24 @@ Postgres automatically applies TOAST compression for large values. The
 Run submission (`POST /runs`) is atomic from the API user's perspective: it
 either fully succeeds (201) or fully fails with no partial side effects.
 
-Machines, commits, and tests are created via a get-or-create pattern. When
-two concurrent sessions race to create the same entity, the loser's INSERT
-hits a unique constraint violation. All three get-or-create methods handle
-this with **savepoint-based retry**:
+Commits and tests are created via a get-or-create pattern. When two concurrent
+sessions race to create the same entity, the loser's INSERT hits a unique
+constraint violation. Both get-or-create methods handle this with
+**savepoint-based retry**:
 
 1. The INSERT is wrapped in `session.begin_nested()` (Postgres SAVEPOINT).
 2. On `IntegrityError`, only the savepoint is rolled back -- prior work in
-   the same transaction (e.g., a machine created earlier in the same
-   `import_run` call) is preserved.
+   the same transaction is preserved.
 3. The method re-queries by name and returns the row created by the winner.
 
-This makes concurrent submissions for the same machine, commit, or test
-names safe. No client-side retry is needed.
+This makes concurrent submissions for the same commit or test names safe. No
+client-side retry is needed.
 
 For tests specifically, a batch resolution path exists that resolves all test
 names in O(1) DB round-trips regardless of test count. It provides the same
 concurrency safety guarantee as the single-test path: concurrent submissions
 with overlapping test sets never produce errors or partial results.
+
+ParameterKey and ParameterValue rows are upserted via
+`INSERT ... ON CONFLICT DO NOTHING`, providing the same concurrency safety
+without savepoints.

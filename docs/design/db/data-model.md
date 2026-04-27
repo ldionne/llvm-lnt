@@ -99,12 +99,6 @@ metrics:
 - name: compile_status
   type: status
 
-machine_fields:
-- name: hardware
-  searchable: true
-- name: os
-  searchable: true
-
 commit_fields:
 - name: git_sha
   searchable: true
@@ -120,9 +114,11 @@ Key differences from v4:
 - `run_fields` with `order: true` is gone. The commit is a built-in concept.
 - `run_fields` section is removed entirely -- extra run data goes in
   `run_parameters` (JSONB).
+- `machine_fields` is removed entirely -- machine metadata goes in
+  `run_parameters` (JSONB) alongside other run metadata.
 - `commit_fields` defines optional typed metadata columns on the Commit table.
-- `searchable: true` on commit_fields or machine_fields enables `?search=`
-  substring matching on the corresponding list API endpoint (see D9).
+- `searchable: true` on commit_fields enables `?search=` substring matching on
+  the commits list API endpoint (see D9).
 - `display: true` on at most one commit_field is a hint for the UI: when set
   and the field has a non-null value, the UI shows that value instead of the
   raw commit string (e.g., a shortened SHA, a version tag). This is purely a
@@ -164,23 +160,10 @@ serialize timestamps as ISO 8601 with `Z` suffix
 - No linked list (NextOrder/PreviousOrder from v4 are gone).
 - Commits are deletable. Deleting a commit cascades to its runs (and their
   samples). Commits referenced by a Regression's commit_id cannot be deleted
-  (the API returns 409).
+  (the API returns 409). Commits with runs referenced by RegressionIndicators
+  also cannot be deleted.
 - Schema-defined `commit_fields` names must not collide with built-in column
   names (`id`, `commit`, `ordinal`, `tag`). The schema parser rejects these.
-
-### `{suite}_Machine`
-
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | Integer | PK |
-| name | String(256) | unique, not null |
-| parameters | JSONB | not null, default `{}` |
-| _(dynamic)_ | per machine_fields | nullable |
-
-- `name` uniqueness is enforced (fixes a v4 bug).
-- `parameters` stores extra key-value data as Postgres JSONB.
-- Schema-defined `machine_fields` names must not collide with built-in column
-  names (`id`, `name`, `parameters`). The schema parser rejects these.
 
 ### `{suite}_Run`
 
@@ -188,16 +171,21 @@ serialize timestamps as ISO 8601 with `Z` suffix
 |--------|------|-------------|
 | id | Integer | PK |
 | uuid | String(36) | unique, not null, indexed |
-| machine_id | Integer FK -> Machine | not null, indexed |
 | commit_id | Integer FK -> Commit | not null, indexed |
 | submitted_at | DateTime | not null |
 | run_parameters | JSONB | not null, default `{}` |
 
 - Every run must have a commit (`commit_id` is not null).
+- `run_parameters` stores flat key-value metadata for the run (compiler, OS,
+  architecture, build flags, etc.). All values are stored as strings. Keys must
+  match `[a-zA-Z0-9_]+` and must not use reserved names (`commit`, `test`,
+  `metric`, `sort`, `cursor`, `limit`, `run`, `search`).
+- GIN index (`jsonb_path_ops`) on `run_parameters` for containment queries.
 - `submitted_at` replaces v4's `start_time`/`end_time` (client-side timing
   goes in `run_parameters` if needed).
-- Cascade: deleting a machine cascades to its runs; deleting a commit cascades
-  to its runs. Deleting a run cascades to its samples.
+- Cascade: deleting a commit cascades to its runs. Deleting a run cascades to
+  its samples. Deleting a run is refused (409) if RegressionIndicators
+  reference it.
 
 ### `{suite}_Test`
 
@@ -230,7 +218,11 @@ serialize timestamps as ISO 8601 with `Z` suffix
 | bug | String(256) | nullable |
 | notes | Text | nullable |
 | state | Integer | not null, indexed |
-| commit_id | Integer FK -> Commit | nullable, indexed |
+| commit_id | Integer FK -> Commit | not null, indexed |
+
+- `commit_id` is required: a regression is always created at a specific commit
+  (the commit where the regression was introduced). This replaces the v4 model
+  where regressions could exist without a known introduction commit.
 
 Regression state values:
 
@@ -251,13 +243,16 @@ The DB layer validates state values on create and update.
 | id | Integer | PK |
 | uuid | String(36) | unique, not null, indexed |
 | regression_id | Integer FK -> Regression | not null, indexed |
-| machine_id | Integer FK -> Machine | not null |
+| run_id | Integer FK -> Run | not null |
 | test_id | Integer FK -> Test | not null |
 | metric | String(256) | not null |
 
-- Unique constraint on `(regression_id, machine_id, test_id, metric)`.
-- Each indicator represents one (machine, test, metric) combination
-  affected by the regression.
+- Unique constraint on `(regression_id, run_id, test_id, metric)`.
+- Each indicator represents one (run, test, metric) combination that evidences
+  the regression. All indicator runs must share the regression's commit
+  (enforced at the API layer).
+- No `ondelete` CASCADE on `run_id` — run deletion is refused if indicators
+  reference it.
 
 ### `{suite}_Profile`
 
@@ -285,12 +280,51 @@ The DB layer validates state values on create and update.
 - Maximum accepted profile size on submission: 50 MB (decoded). Submissions
   exceeding this are rejected with 413.
 
+### `{suite}_ParameterKey`
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | Integer | PK |
+| key | String(256) | unique, not null |
+
+- Tracks known run parameter key names for autocomplete in the UI.
+- Upserted via `INSERT ... ON CONFLICT DO NOTHING` during run submission.
+- One row per distinct parameter key ever seen for this suite.
+
+### `{suite}_ParameterValue`
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | Integer | PK |
+| key_id | Integer FK -> ParameterKey | not null |
+| value | String(256) | not null |
+
+- Unique constraint on `(key_id, value)`.
+- Tracks known (key, value) pairs for value autocomplete in the UI.
+- Upserted during run submission alongside ParameterKey.
+
+### `{suite}_DashboardCard`
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| id | Integer | PK |
+| position | Integer | not null |
+| params | JSONB | not null, default `{}` |
+| metric | String(256) | not null |
+| last_n | Integer | not null, default 500 |
+
+- Per-suite dashboard configuration. Each card defines a parameter query and
+  metric, replayed as a `/trends` call to produce a sparkline.
+- `position` controls display order.
+
 ### Tables Dropped from v4
 
 - **Baseline**: v5 comparisons are stateless API operations.
 - **ChangeIgnore**: Dropped. Noise dismissal happens at the regression level
   via the `false_positive` state with notes.
-- **FieldChange**: Dropped. Regressions directly reference affected machines,
-  tests, and metrics via RegressionIndicator.
+- **FieldChange**: Dropped. Regressions directly reference affected runs, tests,
+  and metrics via RegressionIndicator.
+- **Machine**: Removed. Run metadata is carried by `run_parameters` on the Run
+  table. There is no separate machine entity.
 - **Profile**: Redesigned for v5 (see `{suite}_Profile` above).
 - **Order**: Replaced by Commit.

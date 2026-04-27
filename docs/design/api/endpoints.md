@@ -6,20 +6,6 @@ For framework, pagination, auth, and other infrastructure, see
 [`infrastructure.md`](infrastructure.md).
 
 
-## Machines
-
-```
-GET    /machines                     -- List (filterable, simple pagination)
-POST   /machines                     -- Create machine independently
-GET    /machines/{machine_name}      -- Detail
-PATCH  /machines/{machine_name}      -- Update metadata/parameters (including rename)
-DELETE /machines/{machine_name}      -- Delete machine and its runs
-GET    /machines/{machine_name}/runs -- List runs for this machine (cursor-paginated)
-```
-
-Machines are also created implicitly if a run is submitted for a nonexistent machine.
-
-
 ## Commits
 
 ```
@@ -27,7 +13,7 @@ GET    /commits                      -- List (cursor-paginated, searchable)
 POST   /commits                      -- Create with metadata (commit_fields)
 GET    /commits/{value}              -- Detail (includes previous/next commit by ordinal)
 PATCH  /commits/{value}              -- Update ordinal, tag, and/or commit_fields
-DELETE /commits/{value}              -- Delete commit (cascades to runs/samples; 409 if referenced by regressions)
+DELETE /commits/{value}              -- Delete commit (cascades to runs/samples; 409 if referenced by regressions or indicators)
 POST   /commits/resolve              -- Batch resolve commit strings to summaries
 ```
 
@@ -37,10 +23,10 @@ on creation and assigned exclusively via PATCH (see
 [D11 in db/operations.md](../db/operations.md#d11-ordinal-management)).
 
 Filters: `search=` (case-insensitive substring match on commit string, tag, and
-searchable commit fields; see D9), `machine=` (only commits with at least one
-run on this machine;
-404 if machine not found). Sort: `sort=ordinal` sorts by ordinal ascending
-and excludes commits with NULL ordinals; default sort is by internal ID.
+searchable commit fields; see D9), `param.X=Y` (only commits with at least one
+run whose `run_parameters` contain `{X: Y}`; see filtering conventions in
+[`infrastructure.md`](infrastructure.md)). Sort: `sort=ordinal` sorts by ordinal
+ascending and excludes commits with NULL ordinals; default sort is by internal ID.
 
 ### Batch Resolve
 
@@ -69,17 +55,23 @@ Auth scope: `read`. Not paginated (response is bounded by request size).
 ## Runs
 
 ```
-GET    /runs                         -- List (cursor-paginated, filterable by machine=, after=, before=)
+GET    /runs                         -- List (cursor-paginated, filterable by param.X=Y, commit=, after=, before=)
 POST   /runs                         -- Submit run (server generates UUID, returns it)
 GET    /runs/{uuid}                  -- Detail
-DELETE /runs/{uuid}                  -- Delete run
+DELETE /runs/{uuid}                  -- Delete run (409 if referenced by regression indicators)
 ```
 
 The UUID is a new field, generated server-side on submission. The submission
 endpoint requires JSON format with `format_version '5'`. Legacy formats (v0,
 v1, v2) and non-JSON payloads are rejected. There is no `on_existing_run`
-parameter -- v5 always creates a new run (multiple runs per machine+commit
-are allowed). Deleting a run cascades to its samples and profiles.
+parameter -- v5 always creates a new run (multiple runs per commit are
+allowed). Deleting a run cascades to its samples and profiles; deletion is
+refused (409) if any RegressionIndicator references the run.
+
+Run responses include `run_parameters` (JSONB dict) as the primary metadata.
+
+Filters on `GET /runs`: `param.X=Y` (run parameter match), `commit=` (exact
+commit string), `after=` / `before=` (submitted_at time range).
 
 
 ## Tests
@@ -90,21 +82,109 @@ GET    /tests                        -- List (cursor-paginated, filterable)
 
 Read-only. Tests are created implicitly via run submission.
 
-Filters: `search=` (case-insensitive substring match on test name; see D9), `machine=` (only tests with data
-for this machine), `metric=` (only tests with non-NULL values for this metric).
+Filters: `search=` (case-insensitive substring match on test name; see D9),
+`param.X=Y` (only tests with data for runs matching these parameters),
+`metric=` (only tests with non-NULL values for this metric).
 
 
 ## Samples
 
-Samples are always accessed through their parent run -- they have no external
-identifier of their own.
-
 ```
-GET    /runs/{uuid}/samples                        -- All samples for a run (cursor-paginated)
-GET    /runs/{uuid}/tests/{test_name}/samples       -- Samples for a specific test in a run
+POST   /samples                      -- Unified sample query (cursor-paginated)
 ```
 
-Read-only. Samples are created as part of run submission.
+`POST /samples` is the unified sample query endpoint. It replaces the former
+`POST /query` (time-series), `GET /runs/{uuid}/samples` (per-run), and
+`GET /runs/{uuid}/tests/{name}/samples` (per-run-test) endpoints. It serves
+the Graph page (time-series), Compare page (per-commit samples), Run detail
+page (per-run samples), and programmatic access.
+
+Auth scope: `read`.
+
+**Request body** (JSON):
+
+```json
+{
+  "params": {"compiler": "clang-21", "os": "linux"},
+  "test": ["benchmark/foo", "benchmark/bar"],
+  "metric": "execution_time",
+  "commit": "abc123",
+  "run": null,
+  "sort": "ordinal",
+  "limit": 5000,
+  "cursor": "...",
+  "submitted_before": "2026-04-01T00:00:00Z",
+  "submitted_after": "2026-03-01T00:00:00Z"
+}
+```
+
+- `params`: Dict of key → value for JSONB containment filtering on
+  `Run.run_parameters`. Different keys combine with AND; multiple values for
+  the same key combine with OR. Optional.
+- `test`: List of test names (OR/disjunction). Optional.
+- `metric`: When specified, only that metric's value is returned per sample.
+  When omitted, all metric values are returned as a `"metrics"` dict. Optional.
+- `commit`: Exact commit string filter. Optional.
+- `run`: Run UUID. When specified, returns samples for that specific run.
+  Optional.
+- `sort`: Comma-separated sort fields. Available: `ordinal` (by
+  `Commit.ordinal`), `submitted_at` (by `Run.submitted_at`), `test` (by
+  `Test.name`). Prefix with `-` for descending. When `ordinal` is in the
+  sort, commits without ordinals are excluded. When omitted, results are in an
+  arbitrary but stable order (by `Sample.id`); no data is excluded.
+- `limit`: Max items per page. Default 5000, max 10000.
+- `cursor`: Opaque pagination cursor.
+- `submitted_before`, `submitted_after`: ISO datetime bounds on
+  `Run.submitted_at`.
+
+**Response**:
+
+```json
+{
+  "items": [
+    {
+      "test": "benchmark/foo",
+      "execution_time": 1.23,
+      "run_uuid": "...",
+      "commit": "abc123",
+      "ordinal": 42,
+      "tag": "v1.0",
+      "submitted_at": "2026-04-15T14:30:00Z"
+    }
+  ],
+  "cursor": {"next": "..."}
+}
+```
+
+When `metric` is specified, only that metric's column appears (flat value per
+item). When omitted, a `"metrics": {...}` dict contains all non-null metric
+values.
+
+`Sample.id` is always appended as a unique tiebreaker for cursor pagination.
+One row per sample (array-valued metrics from submission are stored as
+individual sample rows).
+
+
+## Run Parameters
+
+```
+GET    /run-parameters               -- List known parameter keys (paginated)
+GET    /run-parameters/{key}/values  -- List known values for a key (paginated)
+```
+
+These endpoints support the search chip UI by providing autocomplete data for
+run parameter keys and values.
+
+**`GET /run-parameters`**: Lists known parameter key names from the
+`{suite}_ParameterKey` table. Supports `?search=` prefix matching. Paginated.
+Response: `{"items": [{"key": "compiler"}, {"key": "os"}, ...], ...}`
+
+**`GET /run-parameters/{key}/values`**: Lists known values for a given
+parameter key from the `{suite}_ParameterValue` table. Supports `?search=`
+prefix matching. Paginated with hard limit per page.
+Response: `{"items": [{"value": "clang-21"}, {"value": "clang-20"}, ...], ...}`
+
+Auth scope: `read`.
 
 
 ## Profiles
@@ -160,7 +240,7 @@ payload (see D6 in db/operations.md). No separate upload endpoint.
 ## Regressions
 
 ```
-GET    /regressions                              -- List (cursor-paginated, filterable by state=, machine=, test=, metric=, commit=, has_commit=)
+GET    /regressions                              -- List (cursor-paginated, filterable by state=, param.X=Y, test=, metric=, commit=)
 POST   /regressions                              -- Create (accepts title, bug, notes, state, commit, indicators)
 GET    /regressions/{uuid}                       -- Detail (indicators embedded)
 PATCH  /regressions/{uuid}                       -- Update title, bug, notes, state, commit
@@ -184,77 +264,87 @@ state via PATCH.
 - `bug` (string, optional -- URL to external bug tracker)
 - `notes` (string, optional -- investigation findings, A/B results, etc.)
 - `state` (string, optional -- default: `detected`)
-- `commit` (string, optional -- suspected introduction commit, resolved by value)
-- `indicators` (array, optional -- list of `{machine, test, metric}` objects,
-  all resolved by name)
+- `commit` (string, required -- commit where the regression was introduced,
+  resolved by value)
+- `indicators` (array, optional -- list of `{run_uuid, test, metric}` objects;
+  each run must belong to the specified commit)
 
 **Detail response** (`GET /regressions/{uuid}`):
 - `uuid`, `title`, `bug`, `notes`, `state`
-- `commit` (commit identity string, or null)
-- `indicators`: list of `{uuid, machine, test, metric}`
+- `commit` (commit identity string)
+- `indicators`: list of `{uuid, run_uuid, test, metric}`
 
 **List response items** include: `uuid`, `title`, `bug`, `state`, `commit`,
-`machine_count`, `test_count`. The `notes` field is included in detail
+`run_count`, `test_count`. The `notes` field is included in detail
 responses only, not in list.
 
+**List filters**: `state=` (comma-separated list), `param.X=Y` (filter through
+indicator → run → `run_parameters`), `test=`, `metric=`, `commit=`.
+
 **Indicator add request** (`POST /regressions/{uuid}/indicators`):
-- Array of `{machine, test, metric}` objects. Each object is one indicator.
-  Duplicates (same regression+machine+test+metric) are silently ignored.
+- Array of `{run_uuid, test, metric}` objects. Each object is one indicator.
+  Each run must belong to the regression's commit (409 if not).
+  Duplicates (same regression+run+test+metric) are silently ignored.
 
 **Indicator remove request** (`DELETE /regressions/{uuid}/indicators`):
 - Body: `{"indicator_uuids": ["...", "..."]}`
 
 
-## Time Series
-
-### Query
-
-```
-POST   /query
-```
-
-Body (JSON): `{metric, machine, test, commit, after_commit, before_commit,
-              after_time, before_time, sort, limit, cursor}`
-
-The `metric` field is required; all other fields are optional. The `test`
-field accepts a list of names for disjunction queries. The `commit` field
-filters for an exact commit match and cannot be combined with
-`after_commit`/`before_commit`. Time and commit range filters use exclusive
-bounds (strictly after / strictly before the given value).
-
-Returns cursor-paginated time-series data for graphing. Each data point
-contains: `test`, `machine`, `metric`, `value`, `commit`, `ordinal`,
-`run_uuid`, `submitted_at`.
-
-Sort fields: `test`, `commit` (by ordinal), `submitted_at`. When `sort` is
-omitted, results are returned in an arbitrary but stable order suitable for
-cursor pagination; no data is excluded. When `commit` is included in the sort,
-samples for commits without ordinals are excluded (they have no meaningful
-position in ordinal order).
-
-### Trends (Aggregated)
+## Trends (Dashboard Aggregation)
 
 ```
 POST   /trends
 ```
 
-Body (JSON): `{metric, machine, last_n}`
+Body (JSON): `{params, metric, last_n}`
 
-The `metric` field is required and must have type `real`; `status` and `hash`
-metrics are rejected with 400. All other fields are optional. Unlike the query
-endpoint's single machine string, `machine` accepts a list of names -- the
-Dashboard needs data for multiple machines in one call. `last_n` (integer,
-min 1, max 10000) limits the result to the most recent N commits by ordinal.
-Only commits with a non-null ordinal are included.
+```json
+{
+  "params": {"compiler": "clang-21", "os": "linux"},
+  "metric": "execution_time",
+  "last_n": 500
+}
+```
 
-Returns geomean-aggregated trend data per (machine, commit). Not paginated --
-the result set is bounded by (machines x last_n), typically < 5000 rows. Each
-item contains: machine name, commit string, ordinal (always present, never
-null), submitted_at (latest run submission time, may be null), and geomean
-value.
+- `params`: Dict for JSONB containment filtering on `Run.run_parameters`.
+  Optional. When omitted, all runs are included.
+- `metric`: Required. Must have type `real`; `status` and `hash` metrics are
+  rejected with 400.
+- `last_n` (integer, min 1, max 10000): Limits to the most recent N commits
+  by ordinal. Only commits with a non-null ordinal are included.
+
+Returns geomean-aggregated trend data per commit. Not paginated -- the result
+set is bounded by `last_n`. Each call produces one trace. Each item contains:
+commit string, ordinal (always present, never null), tag, submitted_at (latest
+run submission time, may be null), and geomean value.
 
 Geomean is computed in SQL: `exp(avg(ln(positive_values)))`, skipping
 zero/negative values.
+
+Auth scope: `read`.
+
+
+## Dashboard Configuration
+
+```
+GET    /dashboard                    -- Get dashboard card configuration
+PUT    /dashboard                    -- Replace dashboard card configuration
+```
+
+Per-suite dashboard configuration. Each card defines a parameter query and
+metric, replayed as a `/trends` call to produce a sparkline on the dashboard.
+
+**`GET /dashboard`** response:
+```json
+{
+  "cards": [
+    {"position": 0, "params": {"compiler": "clang-21"}, "metric": "execution_time", "last_n": 500},
+    {"position": 1, "params": {"compiler": "gcc-14"}, "metric": "execution_time", "last_n": 500}
+  ]
+}
+```
+
+**`PUT /dashboard`** replaces the full card list. Auth scope: `manage`.
 
 
 ## Schema and Fields
@@ -262,7 +352,7 @@ zero/negative values.
 Schema definitions and metric field metadata are returned as part of the test
 suite detail response (`GET /api/v5/test-suites/{name}`) rather than as
 standalone endpoints. The response includes a `"schema"` object containing
-`machine_fields`, `commit_fields`, and `metrics` (with `name`, `type`,
-`display_name`, `unit`, `unit_abbrev`, `bigger_is_better` for each).
+`commit_fields` and `metrics` (with `name`, `type`, `display_name`, `unit`,
+`unit_abbrev`, `bigger_is_better` for each).
 
 There are no separate `/fields` or `/schema` endpoints.

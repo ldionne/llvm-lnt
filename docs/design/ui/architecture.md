@@ -38,7 +38,7 @@ input starts with `re:`), a small inline "regex" badge appears at the right
 edge of the input. The badge is blue for valid regex and red for invalid regex
 syntax. Invalid regex patterns also show a red halo on the input border. This
 convention applies uniformly to all text filter inputs across the UI: test name
-filters, machine name filters, regression title searches, indicator filters,
+filters, regression title searches, indicator filters,
 combobox suggestion filters, and function name filters. The `re:` prefix is not
 consumed or hidden -- the user sees it in the input and it is included in URL
 state.
@@ -95,14 +95,13 @@ artifacts (fixed-navbar margins, sticky footer).
 ## Page Hierarchy
 
 ```
-/v5/                                   Dashboard (landing page -- sparkline trend overview)
+/v5/                                   Dashboard (landing page -- pinned query sparklines)
 /v5/test-suites?suite={ts}&tab=...     Test Suites (suite picker + browsing tabs)
 /v5/{ts}/                              Suite root (redirects to /v5/test-suites?suite={ts})
-/v5/{ts}/machines/{name}               Machine Detail
 /v5/{ts}/runs/{uuid}                   Run Detail
 /v5/{ts}/commits/{value}               Commit Detail
 /v5/{ts}/regressions/{uuid}            Regression Detail
-/v5/graph?suite={ts}&machine=...       Graph (time series) -- suite-agnostic
+/v5/graph?suite={ts}&trace=...         Graph (time series) -- suite-agnostic
 /v5/compare?suite_a={ts}&...           Compare -- suite-agnostic
 /v5/profiles?suite_a={ts}&...           Profiles (A/B profile viewer) -- suite-agnostic
 /v5/admin                              Admin (API keys, schemas -- not test-suite specific)
@@ -146,9 +145,8 @@ lnt/server/ui/v5/frontend/src/
 +-- combobox.ts                Reuse existing combobox widget
 +-- style.css                  Extend existing styles
 +-- pages/
-|   +-- home.ts                Suite-agnostic dashboard (sparkline trend overview)
+|   +-- home.ts                Suite-agnostic dashboard (pinned query sparklines)
 |   +-- test-suites.ts         Suite-agnostic test suites page (picker + tabs)
-|   +-- machine-detail.ts
 |   +-- run-detail.ts
 |   +-- commit-detail.ts
 |   +-- graph.ts
@@ -162,7 +160,7 @@ lnt/server/ui/v5/frontend/src/
     +-- data-table.ts          Reusable sortable/filterable table
     +-- sparkline-card.ts      Lightweight Plotly sparkline for Dashboard
     +-- time-series-chart.ts   Plotly time-series chart component
-    +-- machine-combobox.ts    Standalone machine typeahead selector
+    +-- search-chips.ts        Parameter search chip input (key:value autocomplete)
     +-- metric-selector.ts     Reusable metric drop-down (supports optional placeholder)
     +-- commit-search.ts       Commit search with tag-based autocomplete
     +-- pagination.ts          Cursor/offset pagination controls
@@ -177,7 +175,7 @@ lnt/server/ui/v5/frontend/src/
 |----------------|----------------|
 | `api.ts` | Extend with new endpoint functions |
 | `types.ts` | Extend with new interfaces |
-| `combobox.ts` | Reuse for Compare page commit/machine selectors (extended with tag display, machine filtering, input validation) |
+| `combobox.ts` | Reuse for Compare page commit selectors (extended with tag display, input validation) |
 | `utils.ts` | Reuse `el()`, `formatValue()`, aggregation functions |
 | `chart.ts` | Compare page bar chart (extended with text filter, zoom preservation) |
 | `table.ts` | Compare page table (extended with row toggling, geomean, summary message) |
@@ -211,7 +209,7 @@ the existing v5 API.
 | Phase | Pages | Foundation Work |
 |-------|-------|-----------------|
 | 1 | (none visible) | SPA shell, router, nav bar, Flask catch-all route, build config |
-| 2 | Test Suites (picker + tabs), Machine Detail, Run Detail, Commit Detail | Core browsing -- data-table component, pagination, suite picker |
+| 2 | Test Suites (picker + tabs), Run Detail, Commit Detail | Core browsing -- data-table component, pagination, suite picker |
 | 3 | Graph | Time-series chart component, combobox integration, aggregation controls, regression annotations |
 | 4 | Compare | Absorb existing compare page into SPA as page module, add geomean summary |
 | 5 | Regression Detail | Full regression management page, cross-page integration |
