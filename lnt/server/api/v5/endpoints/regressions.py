@@ -18,9 +18,10 @@ from ..auth import require_scope
 from ..errors import abort_with_error, reject_unknown_params
 from ..helpers import (
     dump_response,
+    extract_param_filters,
     lookup_commit,
-    lookup_machine,
     lookup_regression,
+    lookup_run_by_uuid,
     lookup_test,
     validate_metric_name,
 )
@@ -64,7 +65,7 @@ def _serialize_indicator(ri):
     """Serialize a RegressionIndicator into the API response dict."""
     return dump_response(_indicator_schema, {
         'uuid': ri.uuid,
-        'machine': ri.machine.name if ri.machine else None,
+        'run_uuid': ri.run.uuid if ri.run else None,
         'test': ri.test.name if ri.test else None,
         'metric': ri.metric,
     })
@@ -86,16 +87,16 @@ def _serialize_regression_list(regression):
     """Serialize a Regression for the list endpoint.
 
     Requires the regression to have indicators eagerly loaded (or
-    accessible) for computing machine_count and test_count.
+    accessible) for computing run_count and test_count.
     """
-    machines = set()
+    runs = set()
     tests = set()
     for ri in regression.indicators:
-        machines.add(ri.machine_id)
+        runs.add(ri.run_id)
         tests.add(ri.test_id)
 
     result = _serialize_regression_base(regression)
-    result['machine_count'] = len(machines)
+    result['run_count'] = len(runs)
     result['test_count'] = len(tests)
     return dump_response(_regression_list_schema, result)
 
@@ -127,26 +128,26 @@ def _validate_state(state_str):
 def _resolve_indicators(session, ts, indicator_dicts):
     """Resolve indicator input dicts to DB-ready dicts.
 
-    Each input dict has {machine, test, metric} (names). This function
-    looks up each entity and returns a list of dicts with
-    {machine_id, test_id, metric}.
+    Each input dict has {run_uuid, test, metric} (names/UUIDs).  This
+    function looks up each entity and returns a list of dicts with
+    {run_id, test_id, metric}.
 
-    Aborts with 404 if any machine or test is not found, 400 if metric is
+    Aborts with 404 if any run or test is not found, 400 if metric is
     unknown.
     """
     resolved = []
-    machine_cache = {}
+    run_cache = {}
     test_cache = {}
     for ind in indicator_dicts:
-        m_name = ind['machine']
-        if m_name not in machine_cache:
-            machine_cache[m_name] = lookup_machine(session, ts, m_name)
+        r_uuid = ind['run_uuid']
+        if r_uuid not in run_cache:
+            run_cache[r_uuid] = lookup_run_by_uuid(session, ts, r_uuid)
         t_name = ind['test']
         if t_name not in test_cache:
             test_cache[t_name] = lookup_test(session, ts, t_name)
         validate_metric_name(ts, ind['metric'])
         resolved.append({
-            'machine_id': machine_cache[m_name].id,
+            'run_id': run_cache[r_uuid].id,
             'test_id': test_cache[t_name].id,
             'metric': ind['metric'],
         })
@@ -156,8 +157,8 @@ def _resolve_indicators(session, ts, indicator_dicts):
 def _eager_load_regression(session, ts, regression_uuid):
     """Look up a regression by UUID with eager-loaded relationships.
 
-    Loads indicators with their machine and test relationships for
-    serialization. Aborts with 404 if not found.
+    Loads indicators with their run (and run's commit) and test
+    relationships for serialization. Aborts with 404 if not found.
     """
     reg = (
         session.query(ts.Regression)
@@ -165,7 +166,8 @@ def _eager_load_regression(session, ts, regression_uuid):
         .options(
             joinedload(ts.Regression.commit_obj),
             subqueryload(ts.Regression.indicators)
-            .joinedload(ts.RegressionIndicator.machine),
+            .joinedload(ts.RegressionIndicator.run)
+            .joinedload(ts.Run.commit_obj),
             subqueryload(ts.Regression.indicators)
             .joinedload(ts.RegressionIndicator.test),
         )
@@ -191,8 +193,8 @@ class RegressionList(MethodView):
     def get(self, query_args, testsuite):
         """List regressions (cursor-paginated, filterable)."""
         reject_unknown_params(
-            {'state', 'machine', 'test', 'metric', 'commit',
-             'has_commit', 'cursor', 'limit'})
+            {'state', 'test', 'metric', 'commit',
+             'cursor', 'limit'})
         ts = g.ts
         session = g.db_session
 
@@ -207,44 +209,43 @@ class RegressionList(MethodView):
             db_states = [_validate_state(sv) for sv in state_values]
             query = query.filter(ts.Regression.state.in_(db_states))
 
-        # -- Commit filters --
+        # -- Commit filter --
         commit_value = query_args.get('commit')
         if commit_value:
             commit_obj = lookup_commit(session, ts, commit_value)
             query = query.filter(
                 ts.Regression.commit_id == commit_obj.id)
 
-        has_commit = query_args.get('has_commit')
-        if has_commit is True:
-            query = query.filter(
-                ts.Regression.commit_id.isnot(None))
-        elif has_commit is False:
-            query = query.filter(
-                ts.Regression.commit_id.is_(None))
+        # -- param.* filter (through indicator -> run -> run_parameters) --
+        param_filters = extract_param_filters()
+        if param_filters:
+            indicator_run_subq = (
+                session.query(ts.RegressionIndicator.regression_id)
+                .join(ts.Run, ts.RegressionIndicator.run_id == ts.Run.id)
+                .filter(
+                    ts.RegressionIndicator.regression_id == ts.Regression.id,
+                    ts._build_params_filter(ts.Run, param_filters),
+                )
+                .correlate(ts.Regression)
+            )
+            query = query.filter(indicator_run_subq.exists())
 
-        # -- Machine / test / metric filters (via indicator JOIN) --
-        machine_name = query_args.get('machine')
+        # -- Test / metric filters (via indicator JOIN) --
         test_name = query_args.get('test')
         metric_name = query_args.get('metric')
 
-        machine = None
-        if machine_name:
-            machine = lookup_machine(session, ts, machine_name)
         test = None
         if test_name:
             test = lookup_test(session, ts, test_name)
         if metric_name:
             validate_metric_name(ts, metric_name)
 
-        if machine or test or metric_name:
+        if test or metric_name:
             query = query.join(
                 ts.RegressionIndicator,
                 ts.RegressionIndicator.regression_id == ts.Regression.id
             )
 
-        if machine:
-            query = query.filter(
-                ts.RegressionIndicator.machine_id == machine.id)
         if test:
             query = query.filter(
                 ts.RegressionIndicator.test_id == test.id)
@@ -252,7 +253,7 @@ class RegressionList(MethodView):
             query = query.filter(
                 ts.RegressionIndicator.metric == metric_name)
 
-        if machine or test or metric_name:
+        if test or metric_name:
             query = query.distinct()
 
         cursor_str = query_args.get('cursor')
@@ -274,11 +275,9 @@ class RegressionList(MethodView):
         state_str = body.get('state') or 'detected'
         db_state = _validate_state(state_str)
 
-        # Resolve commit by value (optional)
-        commit_obj = None
-        commit_value = body.get('commit')
-        if commit_value:
-            commit_obj = lookup_commit(session, ts, commit_value)
+        # Resolve commit by value (required)
+        commit_value = body['commit']
+        commit_obj = lookup_commit(session, ts, commit_value)
 
         # Resolve indicators (optional)
         indicator_dicts = body.get('indicators') or []
@@ -288,9 +287,12 @@ class RegressionList(MethodView):
         bug = body.get('bug')
         notes = body.get('notes')
 
-        regression = ts.create_regression(
-            session, title, resolved,
-            bug=bug, notes=notes, commit=commit_obj, state=db_state)
+        try:
+            regression = ts.create_regression(
+                session, title, resolved,
+                bug=bug, notes=notes, commit=commit_obj, state=db_state)
+        except ValueError as e:
+            abort_with_error(409, str(e))
 
         # Reload with eager-loaded relationships for serialization
         regression = _eager_load_regression(
@@ -348,12 +350,12 @@ class RegressionDetail(MethodView):
 
         if 'commit' in body:
             commit_value = body['commit']
-            if commit_value is None:
-                kwargs['commit'] = None  # clear
-            else:
-                kwargs['commit'] = lookup_commit(session, ts, commit_value)
+            kwargs['commit'] = lookup_commit(session, ts, commit_value)
 
-        ts.update_regression(session, regression, **kwargs)
+        try:
+            ts.update_regression(session, regression, **kwargs)
+        except ValueError as e:
+            abort_with_error(409, str(e))
 
         # Reload for serialization (relationships may have changed)
         regression = _eager_load_regression(session, ts, regression_uuid)
@@ -384,8 +386,9 @@ class RegressionIndicators(MethodView):
     def post(self, body, testsuite, regression_uuid):
         """Add indicators to a regression (batch).
 
-        Duplicates (same regression+machine+test+metric) are silently
-        ignored.
+        Duplicates (same regression+run+test+metric) are silently
+        ignored.  Each indicator's run must belong to the regression's
+        commit (409 if not).
         """
         ts = g.ts
         session = g.db_session
@@ -394,7 +397,10 @@ class RegressionIndicators(MethodView):
         indicator_dicts = body['indicators']
         resolved = _resolve_indicators(session, ts, indicator_dicts)
 
-        ts.add_regression_indicators_batch(session, regression, resolved)
+        try:
+            ts.add_regression_indicators_batch(session, regression, resolved)
+        except ValueError as e:
+            abort_with_error(409, str(e))
 
         # Reload and return full detail
         regression = _eager_load_regression(

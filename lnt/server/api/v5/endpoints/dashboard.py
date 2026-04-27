@@ -23,6 +23,16 @@ blp = Blueprint(
 )
 
 
+def _serialize_card(card):
+    """Serialize a DashboardCard model instance for the API response."""
+    return {
+        'position': card.position,
+        'params': dict(card.params) if card.params else {},
+        'metric': card.metric,
+        'last_n': card.last_n,
+    }
+
+
 @blp.route('/dashboard')
 class Dashboard(MethodView):
     """Get and replace dashboard card configuration."""
@@ -36,15 +46,7 @@ class Dashboard(MethodView):
         session = g.db_session
 
         cards = ts.get_dashboard_cards(session)
-        items = []
-        for card in cards:
-            items.append({
-                'position': card.position,
-                'params': dict(card.params) if card.params else {},
-                'metric': card.metric,
-                'last_n': card.last_n,
-            })
-        return jsonify({'cards': items})
+        return jsonify({'cards': [_serialize_card(c) for c in cards]})
 
     @require_scope('manage')
     @blp.arguments(DashboardPutRequestSchema)
@@ -59,12 +61,4 @@ class Dashboard(MethodView):
         created = ts.set_dashboard_cards(session, card_data)
         session.flush()
 
-        items = []
-        for card in created:
-            items.append({
-                'position': card.position,
-                'params': dict(card.params) if card.params else {},
-                'metric': card.metric,
-                'last_n': card.last_n,
-            })
-        return jsonify({'cards': items})
+        return jsonify({'cards': [_serialize_card(c) for c in created]})

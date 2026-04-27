@@ -40,7 +40,7 @@ class TestLlmsTxt(unittest.TestCase):
         text = resp.get_data(as_text=True)
         self.assertIn('Key Concepts', text)
         self.assertIn('Test Suite', text)
-        self.assertIn('Machine', text)
+        self.assertIn('Run Parameters', text)
         self.assertIn('Regression', text)
 
     def test_contains_api_links(self):
@@ -51,9 +51,25 @@ class TestLlmsTxt(unittest.TestCase):
     def test_contains_endpoint_listing(self):
         resp = self.client.get('/llms.txt')
         text = resp.get_data(as_text=True)
-        self.assertIn('/api/v5/{ts}/machines', text)
         self.assertIn('/api/v5/{ts}/runs', text)
-        self.assertIn('/api/v5/{ts}/query', text)
+        self.assertIn('/api/v5/{ts}/samples', text)
+        self.assertIn('/api/v5/{ts}/run-parameters', text)
+
+    def test_no_machine_references(self):
+        """The llms.txt should not reference machines."""
+        resp = self.client.get('/llms.txt')
+        text = resp.get_data(as_text=True)
+        # Check that the old machine concept is gone
+        self.assertNotIn('Machine', text)
+        self.assertNotIn('/machines', text)
+        self.assertNotIn('machine_name', text)
+
+    def test_contains_parameter_based_filtering(self):
+        """The llms.txt should describe parameter-based filtering."""
+        resp = self.client.get('/llms.txt')
+        text = resp.get_data(as_text=True)
+        self.assertIn('param.X=Y', text)
+        self.assertIn('run_parameters', text)
 
 
 if __name__ == '__main__':

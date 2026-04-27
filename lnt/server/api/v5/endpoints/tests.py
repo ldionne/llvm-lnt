@@ -63,8 +63,7 @@ class TestList(MethodView):
         if param_filters or metric_name:
             query = query.join(ts.Sample, ts.Sample.test_id == ts.Test.id)
         if param_filters:
-            from lnt.server.db.v5 import V5TestSuiteDB
-            pf = V5TestSuiteDB._build_params_filter(ts.Run, param_filters)
+            pf = ts._build_params_filter(ts.Run, param_filters)
             query = query.join(ts.Run, ts.Sample.run_id == ts.Run.id).filter(pf)
         if metric_name:
             validate_metric_name(ts, metric_name)

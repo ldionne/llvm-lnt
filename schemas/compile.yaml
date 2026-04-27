@@ -35,3 +35,6 @@ metrics:
 run_fields:
 - name: llvm_project_revision
   order: true
+machine_fields:
+- name: hardware
+- name: os_version

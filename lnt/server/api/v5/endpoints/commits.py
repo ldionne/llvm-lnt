@@ -163,8 +163,7 @@ class CommitList(MethodView):
         # matching run).
         param_filters = extract_param_filters()
         if param_filters:
-            from lnt.server.db.v5 import V5TestSuiteDB
-            pf = V5TestSuiteDB._build_params_filter(ts.Run, param_filters)
+            pf = ts._build_params_filter(ts.Run, param_filters)
             query = query.filter(
                 session.query(ts.Run).filter(
                     ts.Run.commit_id == ts.Commit.id,

@@ -16,10 +16,11 @@ class TrendsQuerySchema(BaseSchema):
         required=True,
         metadata={'description': 'Metric name (required)'},
     )
-    machine = ma.fields.List(
-        ma.fields.String(),
-        load_default=[],
-        metadata={'description': 'Filter by machine name(s)'},
+    params = ma.fields.Dict(
+        keys=ma.fields.String(),
+        values=ma.fields.String(),
+        load_default=None,
+        metadata={'description': 'Run parameter filters (key -> value)'},
     )
     last_n = ma.fields.Integer(
         load_default=None,
@@ -30,10 +31,6 @@ class TrendsQuerySchema(BaseSchema):
 
 class TrendsItemSchema(BaseSchema):
     """Schema for a single trend item in the response."""
-    machine = ma.fields.String(
-        required=True,
-        metadata={'description': 'Name of the machine'},
-    )
     commit = ma.fields.String(
         required=True,
         metadata={

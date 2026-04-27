@@ -23,6 +23,7 @@ _ENDPOINT_MODULES = [
     'admin',
     'run_parameters',
     'dashboard',
+    'samples_query',
 ]
 
 

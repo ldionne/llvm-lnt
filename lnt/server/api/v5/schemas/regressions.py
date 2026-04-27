@@ -61,10 +61,9 @@ class IndicatorResponseSchema(BaseSchema):
         required=True,
         metadata={'description': 'Indicator UUID'},
     )
-    machine = ma.fields.String(
+    run_uuid = ma.fields.String(
         required=True,
-        allow_none=True,
-        metadata={'description': 'Name of the machine'},
+        metadata={'description': 'UUID of the run'},
     )
     test = ma.fields.String(
         required=True,
@@ -78,10 +77,10 @@ class IndicatorResponseSchema(BaseSchema):
 
 
 class IndicatorInputSchema(BaseSchema):
-    """Schema for a single indicator input ({machine, test, metric})."""
-    machine = ma.fields.String(
+    """Schema for a single indicator input ({run_uuid, test, metric})."""
+    run_uuid = ma.fields.String(
         required=True,
-        metadata={'description': 'Machine name'},
+        metadata={'description': 'Run UUID'},
     )
     test = ma.fields.String(
         required=True,
@@ -99,7 +98,7 @@ class IndicatorAddSchema(BaseSchema):
         ma.fields.Nested(IndicatorInputSchema),
         required=True,
         validate=ma.validate.Length(min=1),
-        metadata={'description': 'List of {machine, test, metric} indicators to add'},
+        metadata={'description': 'List of {run_uuid, test, metric} indicators to add'},
     )
 
 
@@ -138,20 +137,20 @@ class RegressionCreateSchema(BaseSchema):
                   'enum': VALID_STATES},
     )
     commit = ma.fields.String(
-        load_default=None,
-        metadata={'description': 'Optional suspected introduction commit (resolved by value)'},
+        required=True,
+        metadata={'description': 'Commit where the regression was introduced (resolved by value)'},
     )
     indicators = ma.fields.List(
         ma.fields.Nested(IndicatorInputSchema),
         load_default=[],
-        metadata={'description': 'Optional list of {machine, test, metric} indicators'},
+        metadata={'description': 'Optional list of {run_uuid, test, metric} indicators'},
     )
 
 
 class RegressionUpdateSchema(BaseSchema):
     """Schema for PATCH /regressions/{uuid} request body.
 
-    Fields must NOT have ``load_default`` — the PATCH handler uses
+    Fields must NOT have ``load_default`` -- the PATCH handler uses
     ``'key' in body`` to distinguish absent fields (leave unchanged) from
     fields sent as ``null`` (clear the value).
     """
@@ -171,8 +170,7 @@ class RegressionUpdateSchema(BaseSchema):
         metadata={'description': 'New state', 'enum': VALID_STATES},
     )
     commit = ma.fields.String(
-        allow_none=True,
-        metadata={'description': 'Suspected introduction commit (null to clear)'},
+        metadata={'description': 'New commit (resolved by value)'},
     )
 
 
@@ -199,11 +197,11 @@ class RegressionListItemSchema(BaseSchema):
         metadata={'description': 'Regression state', 'enum': VALID_STATES},
     )
     commit = ma.fields.String(
-        allow_none=True,
-        metadata={'description': 'Suspected introduction commit (identity string)'},
+        required=True,
+        metadata={'description': 'Commit where regression was introduced'},
     )
-    machine_count = ma.fields.Integer(
-        metadata={'description': 'Number of distinct machines across indicators'},
+    run_count = ma.fields.Integer(
+        metadata={'description': 'Number of distinct runs across indicators'},
     )
     test_count = ma.fields.Integer(
         metadata={'description': 'Number of distinct tests across indicators'},
@@ -233,8 +231,8 @@ class RegressionDetailSchema(BaseSchema):
         metadata={'description': 'Regression state', 'enum': VALID_STATES},
     )
     commit = ma.fields.String(
-        allow_none=True,
-        metadata={'description': 'Suspected introduction commit (identity string)'},
+        required=True,
+        metadata={'description': 'Commit where regression was introduced'},
     )
     indicators = ma.fields.List(
         ma.fields.Nested(IndicatorResponseSchema),
@@ -262,10 +260,6 @@ class RegressionListQuerySchema(CursorPaginationQuerySchema):
         load_default=[],
         metadata={'description': 'Filter by state (comma-separated)'},
     )
-    machine = ma.fields.String(
-        load_default=None,
-        metadata={'description': 'Filter by machine name'},
-    )
     test = ma.fields.String(
         load_default=None,
         metadata={'description': 'Filter by test name'},
@@ -277,8 +271,4 @@ class RegressionListQuerySchema(CursorPaginationQuerySchema):
     commit = ma.fields.String(
         load_default=None,
         metadata={'description': 'Filter by commit (regressions whose commit_id matches)'},
-    )
-    has_commit = ma.fields.Boolean(
-        load_default=None,
-        metadata={'description': 'Filter: true = has commit, false = no commit'},
     )
