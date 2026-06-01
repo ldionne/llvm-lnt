@@ -1,17 +1,23 @@
 # V5 — Work Items
 
+## Bugs
+
+- [ ] **Graph page "No data to plot"**: POST /samples returns the metric value
+  keyed by the metric name (e.g. `"execution_time": 1.129`) but the frontend's
+  `QueryDataPoint` type expects a `"value"` field. Fix: change
+  `samples_query.py:165` from `item[metric_name]` to `item['value']`.
+- [ ] **Baseline data fetch uses wrong format**: `index.ts` lines 225, 404, 443
+  pass baseline params as `JSON.stringify(bl.params)` but data-cache expects the
+  encoded format (`"compiler:clang-21,os:linux"`). Fix: use `encodeParamQuery()`.
+- [ ] **Dead mocks in tests**: `compare.test.ts` and `profiles.test.ts` still
+  mock `getMachines` and `machine-combobox` (removed functions/files).
+- [ ] **Missing test coverage**: No dedicated unit test file for the `search-chips`
+  component. `putDashboard()` and `postSamples()` in api.ts lack direct unit tests.
+
 ## API Design & Consistency
 
 ### Samples
 
-- [ ] Check whether `GET /runs/{uuid}/samples` should accept a metric
-  filter parameter to reduce data transfer.
-- [ ] Check whether filtering `GET /runs/{uuid}/samples` by test name
-  would eliminate the need for the `/runs/{uuid}/tests/{name}/samples` endpoint.
-- [ ] Check whether `/runs/{uuid}/samples` should become a top-level
-  `/samples?run=UUID` endpoint.
-- [ ] Understand whether the `/query` API can be folded into a top-level
-  `/samples` endpoint for time-series data extraction.
 - [ ] Check whether `before`/`after` should be renamed to
   `submitted_before`/`submitted_after`. Audit all time-filter parameters across
   the API for consistency (including `before_time`/`after_time` on `/trends`).
@@ -89,6 +95,9 @@
 - [ ] Undo changes made to the v4 layer (e.g. new migrations).
 - [ ] Reorganize `combobox.ts` — remnants of the Compare page being
   standalone. Consider renaming for clarity.
+- [ ] Update `lnt submit` CLI to new submission format (no `machine` object,
+  use `run_parameters` instead).
+- [ ] Annotate `v5-machine-removal.md` as "implemented" and consider removing it.
 
 ## Use Cases
 
@@ -192,6 +201,11 @@
 - [ ] **Investigate database size and performance of data submissions**. Using
   lnt-scrape reveals very slow submission times. Profile and identify
   bottlenecks.
+
+### Performance Benchmarking
+
+- [ ] Benchmark GIN index (`jsonb_path_ops`) vs B-tree on realistic data volumes
+  for `run_parameters` filtering. Add expression indexes if needed.
 
 ### P3 — Low / Polish
 
